@@ -3,6 +3,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { MembersModule } from './members/members.module';
+import { WeeksModule } from './weeks/weeks.module';
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { AppService } from './app.service';
         logging: ['error', 'schema'],
       }),
     }),
+    MembersModule,
+    WeeksModule,
   ],
   controllers: [AppController],
   providers: [AppService],
