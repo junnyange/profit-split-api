@@ -98,8 +98,8 @@ describe('AuthService', () => {
     expect(service.verify(token)).toBe(false);
   });
 
-  it('쿠키 옵션: httpOnly, SameSite=Lax, 30일, 프로덕션에서만 Secure', () => {
-    expect(setup().service.cookieOptions()).toMatchObject({ httpOnly: true, sameSite: 'lax', secure: false, maxAge: 2592000000 });
-    expect(setup({ NODE_ENV: 'production' }).service.cookieOptions().secure).toBe(true);
+  it('쿠키 옵션: httpOnly, SameSite=Lax, 30일, 기본 Secure (COOKIE_SECURE=false일 때만 끔)', () => {
+    expect(setup().service.cookieOptions()).toMatchObject({ httpOnly: true, sameSite: 'lax', secure: true, maxAge: 2592000000 });
+    expect(setup({ COOKIE_SECURE: 'false' }).service.cookieOptions().secure).toBe(false);
   });
 });

@@ -1,0 +1,10 @@
+# 이미지에 들어가면 안 되는 것: 비밀값(.env*), 실제 데이터(data/ - 실명 포함), 로컬 빌드 결과
+.env*
+data/
+.git/
+node_modules/
+web/node_modules/
+dist/
+web/dist/
+coverage/
+*.tsbuildinfo

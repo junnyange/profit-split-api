@@ -470,3 +470,105 @@
 - 확정 주 원자재 차단의 경쟁 조건(읽고 확인)은 그대로 (`shortcut:` 주석).
 - 매입자별 미정산 합계: 받을 돈 = 지출 원금으로 결정됨. 범위와 구현은 아직.
 - 지난 항목에서 이어지는 일: 같은 서버에서 화면 서비스(배포), 실시간 갱신 없음, 실제 휴대폰 확인, 배포용 마이그레이션 실행 스크립트(dist), 새 DB 멤버 seed, `.env` 중복 블록 정리, 응답의 멤버 `name` 공개 범위.
+
+### 2026-10-31 - 클라우드 서버 한 대 + Docker Compose 배포 준비
+
+**만든/수정한 파일과 각 역할**
+- 배포 전 수정
+  - `src/main.ts`: `web/dist`가 있으면 정적 파일 서비스 + `/api`가 아닌 GET은 `index.html`. `TRUST_PROXY=true`일 때만 `trust proxy = 1`.
+  - `src/auth/auth.service.ts`: 쿠키 `Secure`를 `NODE_ENV` 대신 `COOKIE_SECURE`로 결정 (기본 true, `"false"`일 때만 끔). 로그인 실패 시 `접속 코드 실패 ip=... 연속=N` 경고 로그 (코드 값은 남기지 않음).
+  - `src/auth/auth.service.spec.ts`: 쿠키 옵션 테스트를 새 규칙으로 변경.
+  - `src/auth/auth.controller.ts`: trust proxy `shortcut:` 주석을 실제 설정 위치 안내로 교체.
+  - `src/seed-members.ts` (새 파일): `SEED_MEMBERS`(쉼표 구분)로 받은 이름을, `members`가 비어 있을 때만 한 트랜잭션으로 순서대로 넣음. 비어 있거나 이미 있으면 아무것도 안 함. 이름은 로그에 남기지 않음.
+  - `src/seed-members.spec.ts` (새 파일): 이름 파싱 테스트 3개.
+  - `package.json`: `migration:run:prod`(`typeorm migration:run -d dist/data-source.js`), `seed:members:prod`(`node dist/seed-members.js`).
+  - `.gitignore`: `.env.production` 추가.
+- Docker
+  - `Dockerfile` (새 파일): web 빌드 → API 빌드 → 프로덕션 의존성 → 실행 이미지(node:24-bookworm-slim, `USER node`). 시작 명령 = 마이그레이션 → seed → 앱.
+  - `.dockerignore` (새 파일): `.env*`, `data/`(실명), node_modules, 빌드 결과, `.git` 제외.
+  - `docker-compose.prod.yml` (새 파일): app, mysql(볼륨, 포트 비공개, 1GB용 설정), caddy(80/443). 프로젝트 이름 `profit-split-prod`. 헬스체크: app은 `GET /api/health`, mysql은 TCP ping.
+  - `deploy/Caddyfile` (새 파일): `DOMAIN`이 있으면 그 도메인으로 자동 HTTPS, 없으면 `:80`.
+  - `deploy/backup-db.sh` (새 파일): mysql 컨테이너 안에서 `mysqldump` → `~/backups/*.sql.gz`, 14일 보관.
+  - `.env.production.example` (새 파일): 배포에 필요한 변수 목록 (값 없음).
+- CI: `.github/workflows/ci.yml` (새 파일): push/PR마다 `npm ci` → 테스트 → API/web 빌드 → Docker 이미지 빌드(amd64, arm64, push 안 함).
+- 문서
+  - `docs/deploy.md` (새 파일): A. AWS EC2, B. 도메인/HTTPS, C. 백업/복원, D. Oracle 이전, E. 비용, F. 정리 체크리스트.
+  - `README.md`: 환경변수 표(`COOKIE_SECURE` + 경고, `TRUST_PROXY`, `SEED_MEMBERS`, `NODE_ENV` 행 삭제), 화면 서비스 설명, "배포용 Docker Compose" 절(띄우기/내리기 명령).
+
+**내린 설계 결정과 이유**
+- **화면 서비스는 Express 미들웨어로 (의존성 추가 없음)**: `@nestjs/serve-static` 대신 Nest에 들어 있는 `useStaticAssets` + 10줄 fallback.
+  - Express 미들웨어는 Nest 라우트(가드)보다 먼저 돌아서, 쿠키 없이도 화면(접속 코드 화면 포함)을 받을 수 있음. 가드는 `/api` 라우트에만 걸림.
+  - `/api`, `/api/...`는 fallback이 건너뛰어서, 없는 API는 `index.html`이 아니라 Nest의 404 JSON.
+  - `index.html`은 `Cache-Control: no-cache`(새 배포 후 옛 화면이 남지 않게). `assets/`는 파일 이름에 해시가 있어 기본 캐시로 둠.
+  - `web/dist`가 없으면(개발 중) 아무것도 등록하지 않음.
+- **trust proxy = 1 (한 단계), 환경변수로 켬**:
+  - 이게 없으면 Caddy 뒤에서 `req.ip`가 모두 Caddy IP가 되어, 한 명이 5번 틀리면 전원이 15분 막힘.
+  - `1`은 "바로 앞 프록시 하나만 믿는다" = `X-Forwarded-For`의 **마지막** 값(Caddy가 직접 본 접속 IP)을 씀. 사용자가 지어낸 앞쪽 값은 무시됨.
+  - `true`(모든 프록시 믿기)나 사설 IP 대역 믿기는 사용자가 보낸 `X-Forwarded-For`까지 믿을 수 있어서 쓰지 않음.
+  - 기본은 끔: 프록시 없이 직접 열린 서버(로컬 개발 등)에서 켜면 누구나 헤더로 IP를 바꿔 잠금을 피할 수 있음. `docker-compose.prod.yml`에서만 `TRUST_PROXY=true`.
+- **`COOKIE_SECURE` 기본 true**: 배포에서 실수로 `Secure`가 빠지지 않게. 로컬 개발(`http://localhost`)은 Chrome/Edge/Firefox가 localhost를 안전한 곳으로 취급해서 `Secure` 쿠키도 동작함 (README에 안 될 때 방법).
+- **seed는 앱 코드(`src/`)에 둠**: 서버 이미지에는 ts-node와 `scripts/`가 없어서, 빌드되는 `src/seed-members.ts` → `dist/seed-members.js`. `require.main === module`일 때만 실행해서 테스트에서 import해도 DB에 붙지 않음.
+- **시작 순서: compose 헬스체크로 DB 대기 → 컨테이너 명령에서 마이그레이션 → seed → 앱**
+  - DB 대기는 `depends_on: condition: service_healthy`로. mysql 헬스체크는 소켓이 아니라 **TCP(127.0.0.1)** `mysqladmin ping`: 첫 실행 초기화 중에는 MySQL이 소켓으로만 떠 있다가 재시작하므로, 소켓 ping은 너무 일찍 통과할 수 있음.
+  - 대기 스크립트(wait-for-it 등)를 따로 두지 않음: compose가 이미 제공하는 기능이고, 직접 만든 재시도 루프보다 단순함.
+  - 마이그레이션을 앱 안(`migrationsRun: true`)에서 돌리지 않은 이유: 별도 단계로 두면 로그가 분리되고, 실패하면 `&&`로 **앱이 아예 뜨지 않아** 잘못된 스키마로 요청을 받지 않음. 실패한 컨테이너는 `restart: unless-stopped`로 다시 시도됨.
+  - 마이그레이션 전용 컨테이너(서비스)를 따로 두지 않음: 서버 한 대, 앱 컨테이너 하나라 동시에 두 번 실행될 일이 없고, 구성이 단순함.
+  - 마지막은 `exec node dist/main.js`: node가 PID 1이 되어 `docker stop`의 SIGTERM을 직접 받음 (npm을 거치면 신호 전달이 불안정).
+  - 셸 스크립트 파일(entrypoint.sh) 대신 `CMD ["sh","-c",...]` 한 줄: Windows에서 체크아웃할 때 줄바꿈(CRLF) 문제로 스크립트가 깨질 위험이 없음.
+- **Dockerfile**:
+  - web, api 빌드 단계는 `--platform=$BUILDPLATFORM`: 결과물이 플랫폼과 무관한 JS라, arm64 이미지를 만들 때도 빌드하는 PC의 아키텍처로 빠르게 빌드. 실행 이미지와 `npm ci --omit=dev`만 대상 플랫폼에서 실행.
+  - 실행 이미지에는 `dist`, `web/dist`, 프로덕션 node_modules만. 파일은 root 소유(앱이 고칠 수 없음), 실행은 `node` 사용자.
+  - Node 24: 로컬 개발(v24)과 같은 LTS. `bookworm-slim`(glibc): alpine(musl)보다 호환성 문제가 적음.
+  - `NPM_CONFIG_UPDATE_NOTIFIER=false`: 시작할 때마다 npm 업데이트 안내가 로그에 찍히는 것을 끔.
+- **compose 환경변수는 `env_file: .env.production`, `${...}` 치환은 쓰지 않음**:
+  - compose의 `${VAR}` 치환은 `.env.production`이 아니라 같은 폴더의 `.env`(개발용)를 읽음. 로컬에서 실수로 개발 값이 들어가거나, 매번 `--env-file`을 붙여야 함.
+  - 대가: `DB_*`와 `MYSQL_*`에 같은 값을 두 번 적어야 함 (예시 파일에 안내). 틀리면 앱이 시작할 때 접속 실패로 바로 드러남.
+  - caddy도 `DOMAIN` 때문에 같은 파일을 읽어서, caddy 컨테이너 환경변수에도 비밀값이 들어감. 파일을 나누는 것보다 단순함을 택함 (더 엄격하게 하려면 DOMAIN만 담은 파일로 분리).
+- **프로젝트 이름 `profit-split-prod`**: 지정하지 않으면 폴더 이름(`profit-split-api`)이라 개발용 `docker-compose.yml`과 같은 프로젝트가 됨. 그러면 `down --remove-orphans` 등에서 개발 DB 컨테이너가 같이 지워질 수 있음.
+- **MySQL 1GB 서버 설정** (기본값이면 MySQL 혼자 400MB 이상 쓸 수 있음):
+  - `performance-schema=OFF`: 가장 효과가 큼 (성능 통계용 메모리).
+  - `innodb-buffer-pool-size=64M`(기본 128M): 데이터가 수 MB라 충분.
+  - `max-connections=30`(기본 151): 연결마다 버퍼를 잡음. 앱 풀(기본 10) + 백업/관리 여유.
+  - `table-open-cache`, `tmp-table-size`, `max-heap-table-size`, `innodb-log-buffer-size` 축소, `skip-name-resolve`.
+  - 측정: 로컬에서 mysql 139~147MB, app 약 84MB, caddy 약 12MB (합 약 250MB).
+  - 서버에서 빌드할 때(npm ci, vite)는 메모리가 더 필요해서, 문서에 스왑 2GB를 넣음.
+- **Caddy 주소**: Caddyfile의 `{$DOMAIN::80}`(기본값 문법)은 변수가 "없을" 때만 기본값을 쓰고, `.env.production`의 `DOMAIN=`처럼 "빈 값"이면 주소가 사라져 설정이 깨짐 (아래 에러). 그래서 compose의 caddy 명령에서 `SITE_ADDRESS="${DOMAIN:-:80}"`(셸)로 바꿔 넘김.
+- **CI**: QEMU + buildx로 x86 러너에서 arm64도 빌드. 에뮬레이션은 프로덕션 의존성 설치 단계뿐. GitHub Actions 캐시(`type=gha`) 사용. 이미지 push와 배포는 하지 않음.
+- **백업**: 비밀번호를 서버 명령줄에 쓰지 않으려고 `docker compose exec mysql sh -c '... -p"$MYSQL_ROOT_PASSWORD"'`(컨테이너 안의 환경변수 사용). `--single-transaction`으로 앱을 멈추지 않고 일관된 백업. `.tmp`로 쓴 뒤 이름 변경 (실패 시 완성된 것처럼 보이는 파일이 남지 않게). `umask 077`.
+- **되돌리기**: 업데이트 전 `docker tag ... :prev`로 이전 이미지를 보관하는 방법을 문서에 씀. 이미지 저장소가 없어도 바로 되돌릴 수 있음.
+
+**중간에 난 에러와 해결 방법**
+- caddy 컨테이너가 계속 재시작 → `caddy adapt`로 확인하니 `Caddyfile:4: unrecognized global option: encode`. `DOMAIN=`(빈 값)이라 `{$DOMAIN::80}`이 빈 문자열이 되어, 사이트 블록이 전역 옵션 블록으로 읽힘 → compose에서 셸로 `:80` 기본값 처리 (위 결정).
+- Dockerfile `ENV`를 셸 `sed`로 두 줄로 바꾸다 `\n`이 글자로 들어가 빌드 실패(`can't find = in "\\n"`) → 한 줄 `ENV A=1 B=2`로 수정.
+- `docker buildx build --platform linux/amd64,linux/arm64` → `Multi-platform build is not supported for the docker driver` (Docker Desktop 기본 드라이버) → 임시 빌더(`docker buildx create --driver docker-container`)로 빌드한 뒤 삭제. CI는 `setup-buildx-action`이 같은 방식의 빌더를 만듦.
+- 백업/복원 확인 중 한글 지출 항목이 깨져 보임 → DB 바이트를 보니 git bash의 curl이 요청 본문을 CP949로 보낸 것 (복원 문제 아님). node `fetch`(UTF-8)로 다시 넣어 백업 → 볼륨 삭제 → 복원하니 바이트까지 같음 (`ED959CEAB88020ED95ADEBAAA9`).
+- 문서 초안에서 PowerShell `>`로 mysqldump를 받게 썼는데, Windows PowerShell 5.1은 `>`가 인코딩을 바꿀 수 있어 `docker cp`로 꺼내는 방법으로 바꿈 (개발 DB에서 읽기만 해서 확인, 파일은 바로 삭제).
+- worklog를 셸 heredoc으로 추가하려다 파싱 에러로 실행되지 않음 (아무것도 쓰이지 않은 것 확인). 편집 도구로 추가함.
+- Oracle 무료 한도를 공식 문서로 다시 확인하니 Ampere A1이 **2 OCPU / 12GB**(예전 자료의 4 / 24와 다름), Chuncheon 리전은 A1 불가로 나와 있어 문서에 반영.
+
+**확인한 방법과 결과**
+- 모든 확인은 compose 안의 새 DB(`profit-split-prod_mysql-data` 볼륨)로 함. 개발 DB(`profit-split-db`)에는 쓰지 않음 (문서용 덤프 명령 확인에서 읽기만).
+- 테스트용 `.env.production`은 무작위 값(가짜 멤버 이름 A~E)으로 만들고, 끝난 뒤 삭제.
+- `docker compose -f docker-compose.prod.yml up -d --build` (DOMAIN 없음, `COOKIE_SECURE=false`): mysql healthy → app healthy → caddy 순서로 시작. 첫 빌드 약 3분.
+- 마이그레이션 자동 실행: 빈 DB에서 `3 migrations are new` → 3개 모두 성공, `migrations` 테이블 3행. 재시작 때는 `No migrations are pending`.
+- 멤버 seed: 빈 DB에서 `[seed] 멤버 5명 추가` → `GET /api/members` = A~E (id 1~5). 재시작 때 `이미 5명이 있어 건너뜀`.
+- 화면 (curl): `/` 200 `text/html` `Cache-Control: no-cache`, `/some/deep/path` 200 html, `/assets/*.js` 200 `text/javascript`, `POST /` 404.
+- API: `/api/health` 200 (쿠키 없이), `/api/weeks/2099-01-05` 쿠키 없음 → 401 UNAUTHORIZED, `/api/nope`, `/api` → 404 JSON (index.html 아님). 로그인 204 + `Set-Cookie`(`COOKIE_SECURE=false`라 Secure 없음).
+- **실제 IP**: `X-Forwarded-For: 9.9.9.9`를 지어내서 틀린 코드 전송 → 앱 로그 `접속 코드 실패 ip=172.19.0.1` = Docker 네트워크 게이트웨이(내 PC에서 들어온 연결을 Caddy가 본 IP). Caddy 컨테이너 IP(172.19.0.4)도, 지어낸 9.9.9.9도 아님.
+- 브라우저 (headless Edge, `http://localhost`): 5/5 통과. 쿠키 없으면 접속 코드 화면 → 틀림 안내 → 로그인 → 멤버 A~E 표시 → 판매 후 저장 → 새로고침해도 값과 로그인 유지.
+- 데이터 유지: `down`(볼륨 유지) → `up` 후, 그리고 `restart app` 후 2099-01-05 값 그대로.
+- 백업/복원: `deploy/backup-db.sh` 실행 → `down -v`로 DB 삭제 → 새로 `up`(빈 DB) → 문서 C-3 순서(app 중지 → 복원 → app 시작)로 복원 → 판매 금액, 지출(한글 포함) 그대로.
+- 멀티 아키텍처: 임시 buildx 빌더로 `linux/amd64,linux/arm64` 빌드 성공 (web/api 빌드는 amd64에서, arm64는 프로덕션 의존성 설치만 에뮬레이션, 약 3분). arm64 이미지를 에뮬레이션으로 실행: `process.arch=arm64`, typeorm/mysql2/seed 모듈 로드, `web/dist/index.html` 존재. 실행 사용자 `uid=1000(node)`. 이미지 크기 316MB.
+- CI 워크플로: GitHub에서 실제로 실행하지는 못함 (push 금지). YAML 파싱만 확인 (jobs `test-build`, `docker`).
+- 끝난 뒤: compose `down -v`(prod 볼륨 3개 삭제 확인), 임시 빌더/arm64 테스트 이미지/headless Edge 종료, `.env.production`과 scratchpad 테스트 파일 삭제. 로컬 이미지 `profit-split-app:latest`는 다시 띄울 때 쓰도록 남김.
+- `npm test`: 9 suites, **56 tests** 모두 통과 (지난 53 + seed 파싱 3). 루트 `npm run build`, `npx tsc --noEmit`, `web` `npm run build` 에러 없음.
+
+**아직 남은 일 / 확인이 필요한 점**
+- 실제 클라우드 배포는 아직 (사용자가 `docs/deploy.md`를 따라 직접). 특히 E절의 "추정" 가격과 Free plan 대상 인스턴스 유형은 콘솔/공식 가격표로 확인 필요.
+- CI는 첫 push 때 GitHub에서 실제로 도는지 확인 필요 (액션 버전: checkout@v5, setup-node@v5, docker/*@v3, build-push@v6).
+- 실제 HTTPS(도메인 + Let's Encrypt)는 로컬에서 확인할 수 없어 확인 안 함. 도메인 연결 후 B-3 순서로 확인.
+- 실제 공인 IP가 `req.ip`로 찍히는지는 서버에서 한 번 더 확인 (로컬은 Docker 게이트웨이 IP로 확인).
+- 무차별 대입 방어의 남은 한계: 실패 기록이 메모리라 컨테이너 재시작(업데이트 포함) 때 초기화. 같은 공인 IP(같은 Wi-Fi)를 쓰는 사람끼리는 여전히 같이 막힘.
+- 백업은 서버 디스크에만 쌓임. 서버 밖 복사(C-2)는 사람이 직접 해야 함 (자동화하려면 S3/Object Storage 등, 비용과 클라우드 의존이 생김).
+- Oracle A1 유휴 회수 정책은 이 앱처럼 사용량이 적으면 해당될 수 있음. Pay As You Go 전환 시 회수 제외 여부는 확인 필요.
+- 지난 항목에서 이어지는 일: 매입자별 미정산 합계, 실시간 갱신 없음, 실제 휴대폰 확인, `.env` 중복 블록 정리, 응답의 멤버 `name` 공개 범위.

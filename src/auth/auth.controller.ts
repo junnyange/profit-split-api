@@ -13,7 +13,7 @@ export class AuthController {
   @Post('login')
   @HttpCode(204)
   login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response): void {
-    // shortcut: req.ip는 프록시 뒤에서는 프록시 IP가 된다. 배포 때 프록시를 두면 app.set('trust proxy', ...) 설정 필요
+    // 프록시 뒤에서는 TRUST_PROXY=true여야 req.ip가 실제 사용자 IP가 된다 (main.ts)
     const token = this.auth.login(dto.code, req.ip ?? 'unknown');
     res.cookie(AUTH_COOKIE, token, this.auth.cookieOptions());
   }

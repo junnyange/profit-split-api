@@ -1,0 +1,9 @@
+# SITE_ADDRESS는 docker-compose.prod.yml이 DOMAIN으로 만든다.
+#   DOMAIN=split.example.com → 그 도메인으로 자동 HTTPS (인증서 발급/갱신, http→https 리다이렉트)
+#   DOMAIN이 비어 있음        → ":80" = 모든 주소의 HTTP만 (IP로 테스트할 때)
+{$SITE_ADDRESS} {
+	encode gzip
+	# 바로 앞 프록시가 Caddy 하나라서 앱은 TRUST_PROXY=true(한 단계)로 X-Forwarded-For를 믿는다.
+	# Caddy는 믿지 않는 클라이언트가 보낸 X-Forwarded-For를 버리고 실제 접속 IP로 다시 쓴다.
+	reverse_proxy app:3000
+}

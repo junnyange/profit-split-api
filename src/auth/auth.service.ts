@@ -1,5 +1,5 @@
 import {
-  HttpException, HttpStatus, Injectable, UnauthorizedException,
+  HttpException, HttpStatus, Injectable, Logger, UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
@@ -31,6 +31,7 @@ export class AuthService {
   // shortcut: 실패 기록을 메모리(Map)에 둔다. 서버 1대 기준이고, 재시작하면 초기화된다.
   // 서버를 여러 대로 늘리면 Redis 같은 공용 저장소로 옮길 것.
   private readonly failures = new Map<string, Failure>();
+  private readonly logger = new Logger(AuthService.name);
 
   constructor(
     config: ConfigService,
@@ -45,7 +46,8 @@ export class AuthService {
     if (this.secret.length < 32) {
       throw new Error('APP_COOKIE_SECRET 환경변수가 없거나 32자보다 짧아서 서버를 시작하지 않습니다');
     }
-    this.secure = config.get('NODE_ENV') === 'production';
+    // 기본은 Secure (HTTPS에서만 쿠키 전송). 도메인 없이 http://IP 로 잠깐 테스트할 때만 COOKIE_SECURE=false
+    this.secure = config.get('COOKIE_SECURE') !== 'false';
   }
 
   // 맞으면 쿠키에 넣을 토큰을 돌려준다. 틀리면 401, IP별 연속 5번 실패하면 15분 동안 429
@@ -62,6 +64,8 @@ export class AuthService {
 
     // 마지막 실패에서 15분이 지났으면 횟수를 처음부터 센다
     const count = (prev && now - prev.lastAt < LOCK_MS ? prev.count : 0) + 1;
+    // 프록시 뒤에서 실제 사용자 IP가 찍히는지(trust proxy) 확인할 수 있게 실패한 IP를 남긴다. 코드 값은 남기지 않는다
+    this.logger.warn(`접속 코드 실패 ip=${ip} 연속=${count}`);
     if (count >= MAX_FAILS) {
       this.failures.set(ip, { count: 0, lastAt: now, lockedUntil: now + LOCK_MS });
       throw tooManyAttempts(LOCK_MS);

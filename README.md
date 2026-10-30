@@ -51,7 +51,7 @@ $ npm run dev        # http://localhost:5173 , /api 요청은 localhost:3000으�
 - API를 다른 포트로 띄웠다면: `API_TARGET=http://localhost:3001 npm run dev` (web/에서).
 - 휴대폰에서 같은 Wi-Fi로 보려면: `npm run dev -- --host` 후 표시되는 Network 주소로 접속.
 - 주소 뒤에 `#2026-11-03`을 붙이면 그 주차가 열린다. 붙이지 않으면 "이번 주" = 오늘(KST) 이후 첫 화요일.
-- 화면 빌드: `cd web && npm run build` → `web/dist/`. (같은 서버에서 화면을 서비스하는 설정은 배포 단계에서 할 예정)
+- 화면 빌드: `cd web && npm run build` → `web/dist/`. `web/dist`가 있으면 API 서버가 같은 포트에서 화면도 준다 (`/api/...`는 API, 그 외 GET은 `index.html`). 접속 코드 가드는 `/api`에만 걸린다.
 
 ## 환경변수
 
@@ -62,7 +62,14 @@ $ npm run dev        # http://localhost:5173 , /api 요청은 localhost:3000으�
 | `APP_ACCESS_CODE` | **필수** | 공용 접속 코드. 없으면 서버가 시작하지 않는다 (잠금 없이 배포되는 것을 막음). 바꾸면 기존 로그인 쿠키가 모두 무효가 된다. |
 | `APP_COOKIE_SECRET` | **필수** | 로그인 쿠키 서명용 비밀값, 32자 이상. 없거나 짧으면 서버가 시작하지 않는다. 생성 예: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `LOCK_CONFIRMED_WEEKS` | `false` | `"true"`일 때만 확정된(잠긴) 주의 **원자재 생산 금액**(`PUT .../contributions/:memberId`)을 `409 WEEK_CONFIRMED`로 막는다. 판매 금액과 지출은 잠긴 뒤에도 수정 가능. 값이 없거나 다른 값이면 막지 않는다. 서버 시작 시 한 번 읽으므로 바꾸면 재시작해야 한다. |
-| `NODE_ENV` | - | `production`이면 로그인 쿠키에 `Secure`를 붙인다 (HTTPS 전용). |
+| `COOKIE_SECURE` | `true` | 로그인 쿠키에 `Secure`를 붙일지. `"false"`일 때만 끈다. 아래 경고 참고. |
+| `TRUST_PROXY` | `false` | `"true"`면 바로 앞 프록시 **한 단계**의 `X-Forwarded-For`를 믿어 `req.ip`를 실제 사용자 IP로 쓴다. 리버스 프록시(Caddy) 뒤에서만 켠다 (`docker-compose.prod.yml`이 켬). 프록시 없이 켜면 누구나 IP를 지어내 로그인 잠금을 피할 수 있다. |
+| `SEED_MEMBERS` | - | 배포 컨테이너 시작 때 `members`가 비어 있으면 넣을 이름 (쉼표 구분, 적은 순서대로 id 1부터). 이미 있으면 아무것도 안 함. |
+
+> **⚠️ `COOKIE_SECURE=false`는 도메인 없이 `http://서버IP`로 잠깐 테스트할 때만 쓴다.**
+> `Secure`가 없으면 로그인 쿠키가 암호화되지 않은 HTTP로 오가서, 같은 네트워크(공용 Wi-Fi 등)에서 쿠키나 접속 코드를 엿볼 수 있다.
+> 테스트가 끝나면 도메인을 연결해 HTTPS로 바꾸고 `COOKIE_SECURE`를 지우거나 `true`로 되돌린다.
+> 로컬 개발(`http://localhost`)은 Chrome/Edge/Firefox가 localhost를 안전한 곳으로 취급해서 `Secure` 쿠키도 동작한다. 다른 브라우저에서 로그인이 안 되면 개발용 `.env`에만 `COOKIE_SECURE=false`를 둔다.
 
 ## 접속 코드 (로그인)
 
@@ -142,6 +149,34 @@ $ npm run verify:sheet            # 다른 주소면 VERIFY_BASE_URL=http://loca
 ```json
 { "statusCode": 409, "code": "VERSION_CONFLICT", "message": "다른 사람이 먼저 수정했습니다. 최신 값을 확인하세요", "current": { "...": "GET /api/weeks/:confirmDate 와 같은 형식" } }
 ```
+
+## 배포용 Docker Compose (app + mysql + caddy)
+
+서버 한 대에서 화면, API, DB, HTTPS 프록시를 함께 띄운다. 클라우드 서버에 올리는 순서는 [docs/deploy.md](docs/deploy.md).
+개발용 `docker-compose.yml`(DB만)과 프로젝트 이름이 달라서(`profit-split-prod`) 컨테이너와 볼륨이 섞이지 않는다.
+
+```bash
+# 처음 한 번: 환경변수 파일 만들고 값 채우기 (.env.production은 커밋되지 않음)
+$ cp .env.production.example .env.production
+
+# 빌드하고 띄우기 (도메인 없이 PC에서 확인하려면 DOMAIN은 비우고 COOKIE_SECURE=false)
+$ docker compose -f docker-compose.prod.yml up -d --build
+# → http://localhost  (컨테이너가 시작할 때 마이그레이션 → 멤버 seed → 앱 순서로 실행)
+
+# 상태 / 로그
+$ docker compose -f docker-compose.prod.yml ps
+$ docker compose -f docker-compose.prod.yml logs -f app
+
+# 내리기 (DB 데이터 볼륨은 남는다. 다시 up 하면 그대로)
+$ docker compose -f docker-compose.prod.yml down
+
+# 내리면서 DB 데이터까지 삭제 (되돌릴 수 없음)
+$ docker compose -f docker-compose.prod.yml down -v
+```
+
+- 배포 서버(ts-node 없음)에서 마이그레이션만 따로: `npm run migration:run:prod` (빌드된 `dist/data-source.js` 사용). 컨테이너는 시작할 때 자동으로 실행한다.
+- 멤버 seed만 따로: `SEED_MEMBERS=... npm run seed:members:prod`.
+- CI(`.github/workflows/ci.yml`): push와 PR마다 테스트 → API/화면 빌드 → Docker 이미지 빌드(amd64, arm64). 이미지 업로드와 자동 배포는 하지 않는다.
 
 ## Compile and run the project
 

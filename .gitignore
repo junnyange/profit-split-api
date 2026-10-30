@@ -60,3 +60,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Real data exported from the old Google Sheets app (contains real names) - never commit
 /data/
+
+# 배포 서버용 환경변수 (실제 비밀값) - never commit
+.env.production

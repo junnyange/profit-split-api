@@ -1,0 +1,80 @@
+# 배포용: 서버 한 대에서 app + mysql + caddy. 사용법은 docs/deploy.md
+#   docker compose -f docker-compose.prod.yml up -d --build
+# 비밀값은 모두 .env.production에서 읽는다 (env_file). ${...} 치환을 쓰지 않는 이유:
+# compose의 ${...}는 .env.production이 아니라 같은 폴더의 .env(개발용)를 읽기 때문.
+# 프로젝트 이름을 따로 둬서 개발용 docker-compose.yml(DB 컨테이너, 볼륨)과 섞이지 않게 한다.
+name: profit-split-prod
+
+services:
+  app:
+    build: .
+    image: profit-split-app:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      # 앞에 Caddy 한 단계만 있으므로 X-Forwarded-For를 한 단계만 믿는다 (src/main.ts)
+      TRUST_PROXY: "true"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    # 포트를 열지 않는다. 바깥에서는 caddy를 통해서만 들어온다
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      TZ: Asia/Seoul
+    # 메모리 1GB 서버용으로 줄인 설정 (기본값으로는 MySQL만 400MB 이상 쓸 수 있다)
+    command:
+      - --performance-schema=OFF        # 성능 통계 수집 끔. 메모리를 가장 많이 줄여 줌
+      - --innodb-buffer-pool-size=64M   # 기본 128M. 데이터가 수 MB라 충분
+      - --innodb-log-buffer-size=8M
+      - --max-connections=30            # 기본 151. 연결마다 버퍼를 잡으므로 줄임 (앱 풀 10개 + 여유)
+      - --table-open-cache=256
+      - --tmp-table-size=16M
+      - --max-heap-table-size=16M
+      - --skip-name-resolve
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # TCP(127.0.0.1)로 확인한다. 첫 실행의 초기화 중에는 MySQL이 소켓으로만 떠 있어서
+      # 소켓 ping은 통과해도 실제로는 아직 준비 전일 수 있기 때문
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 20
+    # 포트를 외부에 열지 않는다 (app만 내부 네트워크로 접속)
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    env_file: .env.production   # DOMAIN을 읽는다
+    # Caddyfile의 {$VAR:기본값}은 변수가 "없을" 때만 기본값을 쓰고, "DOMAIN=" 처럼 빈 값이면 깨진다.
+    # 그래서 셸에서 빈 값이면 :80 으로 바꿔 넘긴다 ($$는 compose 치환을 피하려는 것)
+    command: ["sh", "-c", "SITE_ADDRESS=\"$${DOMAIN:-:80}\" exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data        # 인증서. 지우면 다시 발급받는다 (발급 횟수 제한이 있음)
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  caddy-data:
+  caddy-config:
