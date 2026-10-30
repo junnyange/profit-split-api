@@ -41,16 +41,14 @@ export class WeeksController {
     @Param('confirmDate', ParseDatePipe) confirmDate: string,
     @Body() dto: VersionDto,
   ) {
-    return this.weeksService.setConfirmed(confirmDate, true, dto.version);
+    return this.weeksService.confirm(confirmDate, dto.version);
   }
 
+  // body 없음 (version 검사 안 함). 예전 클라이언트가 { version }을 보내도 @Body가 없으니 무시된다
   @Post('weeks/:confirmDate/unconfirm')
   @HttpCode(200)
-  unconfirm(
-    @Param('confirmDate', ParseDatePipe) confirmDate: string,
-    @Body() dto: VersionDto,
-  ) {
-    return this.weeksService.setConfirmed(confirmDate, false, dto.version);
+  unconfirm(@Param('confirmDate', ParseDatePipe) confirmDate: string) {
+    return this.weeksService.unconfirm(confirmDate);
   }
 
   @Post('weeks/:confirmDate/expenses')

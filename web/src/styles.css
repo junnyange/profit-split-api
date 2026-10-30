@@ -60,3 +60,6 @@ input.money { text-align: right; font-variant-numeric: tabular-nums; }
 .notice.locked { background: #fef3c7; border: 1px solid #fcd34d; }
 .notice.error { background: #fef2f2; border: 1px solid #fca5a5; }
 .form-hint { grid-column: 1 / -1; margin: 0; color: #b91c1c; font-size: 0.9rem; }
+.login { margin-top: 20vh; display: grid; gap: 12px; text-align: center; }
+.login input { text-align: center; font-size: 1.5rem; letter-spacing: 0.5em; }
+button.link { border: none; background: none; color: #6b7280; text-decoration: underline; }

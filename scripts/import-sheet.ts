@@ -20,11 +20,10 @@ async function main() {
   }
 
   // 전부 검사한 뒤에 쓴다: 중간에 이상한 값이 있으면 아무것도 넣지 않고 멈춤
-  const now = new Date();
   const weeks: ImportWeek[] = [];
   let skipped = 0;
   for (const [key, json] of rows) {
-    const week = mapWeekRow(key, json, now);
+    const week = mapWeekRow(key, json);
     if (week) weeks.push(week);
     else skipped++;
   }
@@ -71,7 +70,7 @@ async function importWeek(w: ImportWeek): Promise<boolean> {
         confirmDate: w.confirmDate,
         salesBefore: w.salesBefore,
         salesAfter: w.salesAfter,
-        confirmed: w.confirmed,
+        manualLock: w.manualLock,
         confirmedAt: null, // 원본에 확정 시각이 없음
       }),
     );
@@ -89,7 +88,7 @@ async function importWeek(w: ImportWeek): Promise<boolean> {
 function printWeek(w: ImportWeek) {
   console.log(
     `\n[${w.confirmDate}] 판매 ${w.salesBefore} → ${w.salesAfter}, ` +
-      `confirmed=${w.confirmed} (${w.confirmedBy}), 원자재(id 1~5)=${w.materials.join(', ')}`,
+      `manualLock=${w.manualLock}, 원자재(id 1~5)=${w.materials.join(', ')}`,
   );
   for (const e of w.expenses) {
     console.log(

@@ -1,6 +1,4 @@
-import { isAutoConfirmed, mapWeekRow, parseCsv, parseNumber, SheetDataError } from './sheet';
-
-const NOW = new Date('2026-10-30T12:00:00+09:00');
+import { mapWeekRow, parseCsv, parseNumber, SheetDataError } from './sheet';
 
 function row(overrides: Record<string, unknown> = {}, expense: Record<string, unknown> = {}) {
   return JSON.stringify({
@@ -37,31 +35,31 @@ describe('parseCsv / parseNumber', () => {
 
 describe('mapWeekRow', () => {
   it('week가 아닌 key는 건너뛴다(null)', () => {
-    expect(mapWeekRow('settings', '{}', NOW)).toBeNull();
+    expect(mapWeekRow('settings', '{}')).toBeNull();
   });
 
   it('buyer 인덱스 → id, 빈 값 → null, memo → item, paid → distributed', () => {
-    const w = mapWeekRow('week:2026-11-03', row({}, { buyer: '' }), NOW)!;
+    const w = mapWeekRow('week:2026-11-03', row({}, { buyer: '' }))!;
     expect(w.expenses[0]).toEqual({ item: '유리', category: '가계부', amount: 100, buyerId: null, distributed: true });
-    expect(mapWeekRow('week:2026-11-03', row({}, { buyer: 4 }), NOW)!.expenses[0].buyerId).toBe(5);
+    expect(mapWeekRow('week:2026-11-03', row({}, { buyer: 4 }))!.expenses[0].buyerId).toBe(5);
   });
 
-  it('manualLock이 있으면 그 값, null이면 확정일 00시 KST 기준으로 계산', () => {
-    expect(mapWeekRow('week:2026-11-03', row({ manualLock: true }), NOW)).toMatchObject({ confirmed: true, confirmedBy: 'manual' });
-    expect(mapWeekRow('week:2026-11-03', row(), NOW)).toMatchObject({ confirmed: false, confirmedBy: 'auto' });
-    expect(mapWeekRow('week:2026-10-27', row(), NOW)).toMatchObject({ confirmed: true, confirmedBy: 'auto' });
-    expect(isAutoConfirmed('2026-10-31', new Date('2026-10-30T15:00:00Z'))).toBe(true); // = 10-31 00:00 KST
+  it('manualLock은 원본 그대로 저장 (null = 자동, 잠김 여부는 앱이 요청마다 계산)', () => {
+    expect(mapWeekRow('week:2026-11-03', row({ manualLock: true }))!.manualLock).toBe(true);
+    expect(mapWeekRow('week:2026-11-03', row({ manualLock: false }))!.manualLock).toBe(false);
+    expect(mapWeekRow('week:2026-11-03', row())!.manualLock).toBeNull();
+    expect(() => mapWeekRow('week:2026-11-03', row({ manualLock: 'yes' }))).toThrow(SheetDataError);
   });
 
   it('이상한 값은 건너뛰지 않고 어느 주의 어떤 값인지 알려주며 멈춘다', () => {
-    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({ material: [1, -2, 3, 4, 5] }), NOW)))
+    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({ material: [1, -2, 3, 4, 5] }))))
       .toContain('week:2026-10-20 material[1] = -2');
-    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({}, { amount: '1,000' }), NOW)))
+    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({}, { amount: '1,000' }))))
       .toContain('expenses[0].amount = "1,000"');
-    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({}, { buyer: 5 }), NOW)))
+    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({}, { buyer: 5 }))))
       .toContain('expenses[0].buyer = 5');
-    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({}, { cat: '기타' }), NOW)))
+    expect(errorOf(() => mapWeekRow('week:2026-10-20', row({}, { cat: '기타' }))))
       .toContain('expenses[0].cat');
-    expect(errorOf(() => mapWeekRow('week:2026-02-30', row(), NOW))).toContain('key');
+    expect(errorOf(() => mapWeekRow('week:2026-02-30', row()))).toContain('key');
   });
 });

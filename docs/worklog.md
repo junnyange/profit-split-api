@@ -362,3 +362,111 @@
 - **실제 휴대폰(iOS Safari, Android Chrome)에서 확인 필요**: 숫자 키패드(`inputMode="numeric"`), 입력 확대, 안내 고정 위치.
 - **시작 템플릿 파일 삭제가 staged 되지 않은 상태**로 남아 있음. 커밋할 때 함께 포함할 것 (`git add -A` 또는 `git rm --cached`).
 - 지난 항목에서 이어지는 일: 자동 확정 규칙 없음(11-03이 지나도 자동 확정 안 됨), 확정 주 차단 경쟁 조건, 응답의 멤버 `name` 공개 범위, 배포용 마이그레이션 실행 스크립트(dist), 새 DB 멤버 seed, `.env` 중복 블록 정리.
+
+### 2026-10-30 - 공용 접속 코드 + 확정 잠금 규칙 변경 + 자동 잠금
+
+**만든/수정한 파일과 각 역할**
+- 접속 코드 (`src/auth/`, 새 폴더)
+  - `auth.service.ts`: 코드 확인(상수 시간 비교), IP별 실패 횟수/15분 잠금(메모리), 쿠키 토큰 발급/검증(HMAC-SHA256), 쿠키 옵션. 환경변수가 없으면 생성자에서 에러를 던져 서버가 시작하지 않음.
+  - `auth.guard.ts`: 전역 가드. `@Public()`이 아닌 요청은 `ps_auth` 쿠키 검증, 실패하면 `401 UNAUTHORIZED`. Cookie 헤더 파서 `readCookie` 포함.
+  - `auth.controller.ts`: `POST /api/auth/login`(204 + 쿠키), `POST /api/auth/logout`(쿠키 삭제).
+  - `public.decorator.ts`: `@Public()` (health, auth에 붙임).
+  - `login.dto.ts`: `{ code: string }` (최대 100자).
+  - `auth.module.ts`: `APP_GUARD`로 가드를 앱 전체에 등록.
+  - `auth.service.spec.ts`(8개), `auth.guard.spec.ts`(4개): 가짜 코드(`0000` 등)만 사용.
+- 잠금 규칙
+  - `src/common/clock.ts` (새 파일): 현재 시각 provider. 테스트에서 고정 시각을 넣음.
+  - `src/weeks/lock.ts` (새 파일): `isWeekLocked(confirmDate, manualLock, now)` = `manualLock ?? now ≥ 확정일 00:00 KST`.
+  - `src/weeks/lock.spec.ts` (새 파일): 경계 테스트 3개 (월 23:59:59.999 vs 화 00:00 KST, UTC 기준 같은 순간, 수동 설정 우선).
+  - `src/weeks/week.entity.ts`: `confirmed: boolean` → `manualLock: boolean | null`.
+  - `src/migrations/1793340632452-ConfirmedToManualLock.ts` (새 파일, 손으로 작성): 컬럼 추가 → 데이터 변환 → `confirmed` 삭제. `down()`도 변환 포함.
+  - `src/weeks/weeks.service.ts`: 잠김은 요청마다 계산. 원자재만 차단(`assertMaterialsWritable`). `confirm`(version 검사) / `unconfirm`(version 없음, 항상 성공) 분리. 응답에 `manualLock`, `materialsLocked` 추가. 지출 삭제는 다시 단순 DELETE로.
+  - `src/weeks/weeks.controller.ts`: `unconfirm`에서 `@Body()` 제거.
+  - `src/weeks/weeks.module.ts`: `Clock` provider.
+  - `src/weeks/weeks.service.spec.ts`: 18개 (낙관적 락 4, 확정/해제/자동 경계 6, 잠긴 주 수정 규칙 6, 정산 2).
+- `src/app.module.ts`: `AuthModule` 등록. `src/health.controller.ts`: `@Public()`.
+- 스크립트
+  - `scripts/sheet.ts`, `import-sheet.ts`: import 때 잠김을 계산하지 않고 원본 `manualLock`(null/true/false)을 그대로 저장. `now` 인자 삭제.
+  - `scripts/sheet.spec.ts`: manualLock 테스트 교체.
+  - `scripts/verify-sheet.ts`: `.env`의 `APP_ACCESS_CODE`로 로그인해서 쿠키로 호출. `sheet-data.csv`의 manualLock과 API manualLock 비교 추가.
+- 화면 (`web/src/`)
+  - `components/LoginScreen.tsx` (새 파일): 접속 코드 화면. `type=password` + `inputMode=numeric`(숫자 키패드), 틀림/429 안내.
+  - `App.tsx`: 401 UNAUTHORIZED를 받으면 코드 화면. 잠긴 주에서는 원자재 칸만 잠그고(`materialsLocked`), 판매 금액과 지출은 열어 둠. 확정 해제는 version 없이 호출. 맨 아래 로그아웃 버튼.
+  - `api.ts`: `Week` 타입에 `manualLock`, `materialsLocked`. `login`/`logout`. `unconfirm`은 body 없음. 문장 추가(UNAUTHORIZED, INVALID_CODE, TOO_MANY_ATTEMPTS + 남은 분), WEEK_CONFIRMED 문장 변경.
+  - `components/WeekHeader.tsx`: 배지 "확정 (자동)" / "확정" / "수정 가능".
+  - `components/ExpenseSection.tsx`: 잠금과 무관하게 항상 열림 (`disabled` prop 제거).
+  - `styles.css`: 로그인 화면, 링크 버튼.
+- `README.md`: 환경변수 표(APP_ACCESS_CODE, APP_COOKIE_SECRET, LOCK_CONFIRMED_WEEKS 새 의미, NODE_ENV), 접속 코드 절, 확정(잠금) 규칙 절, import/verify 설명 수정.
+
+**내린 설계 결정과 이유**
+- **자동 잠금 방식: 제안대로 결정**. `manualLock`(null/true/false)만 저장하고, 잠김은 요청마다 `manualLock ?? (지금 ≥ 확정일 00:00 KST)`로 계산.
+  - 다른 방법(스케줄러가 화요일 00시에 `confirmed=true`로 바꾸기)은 그 시각에 서버가 꺼져 있으면 틀리고, 자동/수동 구분이 사라짐.
+  - 이 방식은 저장 상태가 없어서 항상 맞고, 자동으로 잠긴 주를 풀면 `false`가 저장돼 다시 잠기지 않음.
+  - 그래서 따로 묻지 않고 진행함.
+- **마이그레이션 데이터 변환 규칙**: 마이그레이션 시점의 잠김 상태가 바뀌지 않게 정함.
+  - `confirmed=1` → `1` (수동 잠금)
+  - `confirmed=0`이고 확정일이 지남 → `0` (누가 풀어 둔 주)
+  - `confirmed=0`이고 확정일 전 → `NULL` (자동)
+  - KST 현재 시각은 `DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR)`로 계산해서, DB 세션 시간대와 무관함.
+  - `migration:generate`는 이름만 바꾸는 `CHANGE confirmed manualLock`을 만들어서 `false`가 "수동 해제"가 됨. 그러면 2026-11-03이 확정일이 지나도 자동으로 잠기지 않으므로 손으로 작성함.
+- **잠긴 주에서 막는 것은 원자재뿐**: `updateContribution`만 검사. 판매 금액, 지출 추가/삭제는 검사 코드를 지움.
+- **unconfirm**: version 검사 없이 항상 성공. 이미 풀려 있으면 아무것도 쓰지 않고 200. 행이 없는 지난 주(자동 잠김)면 행을 만들어 `manualLock=false`로 저장. `@Body()`를 없애서, 예전 화면이 `{version}`을 보내도 400이 나지 않음.
+- **confirm**: version 검사는 그대로. 이미 잠겼으면(자동 포함) 200.
+- **`materialsLocked`를 응답에 추가**: 서버 설정(`LOCK_CONFIRMED_WEEKS`)을 화면이 알 수 있게 해서, 막히기 전에 원자재 칸을 잠금. 지난 단계의 "WEEK_CONFIRMED를 한 번 받아야 잠금" 방식은 없앰. 설정이 false면 `materialsLocked=false`라 기존 동작 그대로.
+- **쿠키 서명은 직접 구현 (의존성 추가 없음)**: 토큰 = `만료시각.HMAC-SHA256(secret, "만료시각.접속코드")`(base64url).
+  - 서명에 접속 코드를 넣어서, 코드를 바꾸면 모든 기기가 다시 로그인해야 함 (코드 유출 시 바로 차단 가능).
+  - `cookie-parser`는 node_modules에 간접 의존성으로만 있어서 쓰지 않고, Cookie 헤더를 직접 읽음 (10줄).
+- **상수 시간 비교**: `timingSafeEqual`은 길이가 다르면 에러가 나서, 양쪽을 SHA-256(32바이트)으로 만든 뒤 비교. 코드 확인과 서명 확인 모두 같은 방식.
+- **무차별 대입 방어**: IP별 연속 실패 5번 → 15분 동안 429 (맞는 코드도 429). 5번째 실패 응답부터 429로 바로 알려줌. 마지막 실패에서 15분이 지나면 횟수 초기화, 성공하면 초기화. 오래된 기록은 로그인 요청 때 정리.
+- **필수 환경변수**: `APP_ACCESS_CODE`가 없거나, `APP_COOKIE_SECRET`이 없거나 32자 미만이면 서버가 시작하지 않음. 비밀값이 짧으면 쿠키 위조가 쉬워지므로 비밀값도 필수로 함.
+- **쿠키 옵션**: httpOnly, SameSite=Lax, path=/, 30일, `NODE_ENV=production`에서만 Secure (로컬 http 개발에서도 동작하게).
+- **로그인 상태 확인 API는 만들지 않음**: httpOnly 쿠키는 JS로 읽을 수 없으므로, 첫 GET이 401이면 코드 화면을 보여줌.
+
+**무차별 대입 방어의 한계 (중요)**
+- 실패 기록이 **서버 메모리**에 있음. 서버를 재시작하면 초기화되고, 서버를 2대 이상으로 늘리면 서버마다 따로 셈 (Redis 등 공용 저장소 필요).
+- **IP 기준**이라:
+  - IP를 바꿔 가며 시도하면(여러 프록시, IPv6 주소 여러 개) 막을 수 없음. 실제로 `127.0.0.1`과 `::1`도 다른 IP로 셈 (확인함).
+  - 같은 Wi-Fi(같은 공인 IP)를 쓰는 사람이 5번 틀리면 같은 IP의 다른 팀원도 15분 동안 막힘.
+  - 배포 때 리버스 프록시 뒤에 두면 `req.ip`가 프록시 IP가 되어 모든 사용자가 하나로 묶임. `app.set('trust proxy', ...)` 설정 필요 (코드에 `shortcut:` 주석).
+- 코드가 4자리(1만 가지)라, IP 하나로 15분에 5번이면 전부 시도하는 데 약 3만 분(약 3주) 걸림. IP를 여러 개 쓰면 그만큼 빨라짐. 더 강하게 하려면 코드 자리수 늘리기, 전체(IP 무관) 실패 횟수 제한, 실패할 때마다 지연 늘리기 등.
+
+**중간에 난 에러와 해결 방법**
+- `migration:generate --dryrun`이 `confirmed`를 `manualLock`으로 이름만 바꾸고 NOT NULL을 풀었다 다시 거는 SQL을 만듦 → 데이터 변환이 없어서 손으로 작성 (위 결정).
+- `npx tsc --noEmit`에서 `scripts/import-sheet.ts`가 없어진 `confirmed` 필드를 써서 에러 → import를 `manualLock` 저장으로 바꿔서 해결.
+- 429 curl 테스트로 `127.0.0.1`이 15분 잠긴 채라, 브라우저 확인 전에 API 서버를 재시작해서 메모리 기록을 초기화함 (메모리 저장의 한계를 직접 확인한 셈).
+- 확인 시작 시점에 실제 주차 2026-10-27이 version 7, `confirmedAt` 15:03으로 바뀌어 있었음 (이번 작업 밖에서 수정된 것). 값은 건드리지 않음. 마이그레이션으로 `manualLock=1`이 되어 시트 원본(true)과 같음.
+- worklog를 셸 heredoc으로 추가하려다 파싱 에러로 실행되지 않음 (아무것도 쓰이지 않은 것 확인). 편집 도구로 추가함.
+
+**확인한 방법과 결과**
+- 시작 전 `mysqldump` 백업 (scratchpad).
+- 마이그레이션 (임시 DB `profit_split_migtest`):
+  - 옛 스키마에 4가지 경우를 넣고 up 실행 → (지난 주, 1)→1, (지난 주, 0)→0, (미래 주, 0)→NULL, (미래 주, 1)→1.
+  - `--check` "변경 없음". down → confirmed 원래 값으로 복원. 다시 up 정상. 임시 DB 삭제.
+- 개발 DB: up 실행 → 2026-10-20 `1`, 2026-10-27 `1`, 2026-11-03 `NULL`. `--check` "변경 없음". 멤버 5명 유지.
+- 서버 시작 거부: `APP_ACCESS_CODE` 없음 → `Error: APP_ACCESS_CODE 환경변수가 없어서 서버를 시작하지 않습니다`, exit 1. `APP_COOKIE_SECRET` 없음도 같은 방식으로 실패.
+- 테스트용 접속 코드/비밀값은 실행할 때마다 무작위로 만들어 scratchpad에만 두고, 끝난 뒤 삭제 (파일과 문서에 남기지 않음).
+- curl (포트 3001, `LOCK_CONFIRMED_WEEKS=true`):
+  - `/api/health` 쿠키 없이 200. `/api/weeks/...` 쿠키 없음/틀린 쿠키 → `401 UNAUTHORIZED`.
+  - 틀린 코드 1~4번 → `401 INVALID_CODE`(remainingAttempts 4→1). 5번째 → `429 TOO_MANY_ATTEMPTS`(retryAfterSeconds 900). 6번째, 맞는 코드 → 429. 다른 IP(`::1`)에서 맞는 코드 → 204 + `Set-Cookie: ps_auth=…; Max-Age=2592000; Path=/; HttpOnly; SameSite=Lax`.
+  - 2099-01-05: confirm → 원자재 `409 WEEK_CONFIRMED`(새 문구), 판매 200, 지출 추가 201/삭제 204. body 없는 unconfirm 200 (`manualLock=false`). 다시 unconfirm 200 (version 그대로). `{version:1}`을 보내도 200.
+  - 실제 주차는 GET만: 10-20/10-27 `confirmed=true, manualLock=true`, 11-03 `confirmed=false, manualLock=null`.
+- `verify:sheet` (로그인 후): **15개 정산액 중 15개 일치**, % 15/15, 합계 9/9, 확정 상태 3/3, **manualLock 3/3 일치**.
+- 브라우저 (headless Edge, 휴대폰 크기, Vite 5173 → API 3001): **16/16 통과**, 그리고 429 안내 1/1.
+  - 코드 화면: 쿠키 없으면 코드 화면(숫자 키패드), 틀린 코드 → "접속 코드가 맞지 않아요", 맞는 코드 → 정산 화면, 다른 탭은 쿠키 공유로 바로 진입.
+  - A 확정 → 원자재 칸만 잠김. 잠긴 상태에서 판매 후 저장, 지출 추가/삭제 성공.
+  - B(옛 화면)에서 원자재 수정 → WEEK_CONFIRMED 안내, 새로 받은 뒤 원자재만 잠김.
+  - B 확정 해제 → 원자재 열림. A(아직 확정으로 보이는 옛 화면)에서 확정 해제 → 안내 없이 성공.
+  - 실제 주차는 보기만: 10-27 "확정"(원자재 잠김, 판매 열림), 11-03 "수정 가능". 행이 없는 지난 주 2026-10-13 "확정 (자동)" (GET만이라 행 생기지 않음, 확인함).
+  - 로그아웃 → 코드 화면. 5번 틀림 → "여러 번 틀려서 잠시 막혔어요. 15분 후 다시 시도해 주세요."
+- 루트 `npm run build`, `npx tsc --noEmit`, `web` `npm run build`: 모두 에러 없음.
+- `npm test`: 8 suites, **53 tests** 모두 통과 (지난 30 → 53. auth.service 8, auth.guard 4, lock 3 추가, weeks.service 10 → 18).
+- 끝난 뒤 2099-01-05 삭제. 실제 주차 3개는 manualLock 1/1/NULL, version 1/7/1, contributions 15, expenses 13 그대로. 3001, 5173, headless Edge 종료.
+
+**아직 남은 일 / 확인이 필요한 점**
+- **`.env`에 추가 필요** (사용자가 직접): `APP_ACCESS_CODE`, `APP_COOKIE_SECRET`(32자 이상), `LOCK_CONFIRMED_WEEKS=true`. 추가하기 전에는 서버가 시작하지 않음 (`npm run start:dev`, e2e 테스트, `verify:sheet` 포함).
+- 무차별 대입 방어 한계 (위 절): 메모리 저장, IP 기준, 프록시 뒤 `trust proxy` 설정.
+- 정산기록 시트의 "상태" 열은 내보낸 시점(10-30) 기준이라, 2026-11-03 00:00 KST 이후에는 API가 11-03을 "확정"으로 보여주고 `verify:sheet`의 확정 상태 비교가 2/3이 됨 (정상 동작). manualLock 비교는 계속 3/3.
+- 로그인 화면이 뜨면 저장 중이던 입력값은 사라짐 (401 후 다시 입력해야 함). 30일마다 다시 로그인.
+- 확정 주 원자재 차단의 경쟁 조건(읽고 확인)은 그대로 (`shortcut:` 주석).
+- 매입자별 미정산 합계: 받을 돈 = 지출 원금으로 결정됨. 범위와 구현은 아직.
+- 지난 항목에서 이어지는 일: 같은 서버에서 화면 서비스(배포), 실시간 갱신 없음, 실제 휴대폰 확인, 배포용 마이그레이션 실행 스크립트(dist), 새 DB 멤버 seed, `.env` 중복 블록 정리, 응답의 멤버 `name` 공개 범위.

@@ -6,13 +6,13 @@ import { MoneyInput } from './MoneyInput';
 interface Props {
   expenses: Expense[];
   members: Contribution[]; // 매입자 드롭다운의 이름은 API에서 받은 것만 쓴다
-  disabled: boolean;
   onAdd: (e: { item: string; amount: number; category: Category; buyerId: number | null }) => Promise<boolean>;
   onDelete: (e: Expense) => void;
 }
 
 // 지출 목록 + 추가 폼
-export function ExpenseSection({ expenses, members, disabled, onAdd, onDelete }: Props) {
+// 확정된(잠긴) 주에서도 지출은 추가/삭제할 수 있다
+export function ExpenseSection({ expenses, members, onAdd, onDelete }: Props) {
   const [item, setItem] = useState('');
   const [amount, setAmount] = useState(0);
   const [category, setCategory] = useState<Category>('지출');
@@ -47,7 +47,7 @@ export function ExpenseSection({ expenses, members, disabled, onAdd, onDelete }:
             </div>
             <div className="row-end">
               <span>{formatWon(e.amount)}원</span>
-              <button className="danger" onClick={() => onDelete(e)} disabled={disabled} aria-label={`${e.item} 삭제`}>
+              <button className="danger" onClick={() => onDelete(e)} aria-label={`${e.item} 삭제`}>
                 삭제
               </button>
             </div>
@@ -56,9 +56,9 @@ export function ExpenseSection({ expenses, members, disabled, onAdd, onDelete }:
       </ul>
 
       <form className="expense-form" onSubmit={submit}>
-        <input aria-label="항목" placeholder="항목" maxLength={100} value={item} disabled={disabled} onChange={(e) => setItem(e.target.value)} />
-        <MoneyInput label="지출 금액" value={amount} onCommit={setAmount} disabled={disabled} />
-        <select aria-label="구분" value={category} disabled={disabled} onChange={(e) => setCategory(e.target.value as Category)}>
+        <input aria-label="항목" placeholder="항목" maxLength={100} value={item} onChange={(e) => setItem(e.target.value)} />
+        <MoneyInput label="지출 금액" value={amount} onCommit={setAmount} />
+        <select aria-label="구분" value={category} onChange={(e) => setCategory(e.target.value as Category)}>
           {CATEGORIES.map((c) => (
             <option key={c}>{c}</option>
           ))}
@@ -66,7 +66,6 @@ export function ExpenseSection({ expenses, members, disabled, onAdd, onDelete }:
         <select
           aria-label="매입자"
           value={buyerId ?? ''}
-          disabled={disabled}
           onChange={(e) => setBuyerId(e.target.value ? Number(e.target.value) : null)}
         >
           <option value="">매입자 없음</option>
@@ -77,7 +76,7 @@ export function ExpenseSection({ expenses, members, disabled, onAdd, onDelete }:
           ))}
         </select>
         {invalid && <p className="form-hint">항목과 금액(1원 이상)을 입력해 주세요.</p>}
-        <button className="primary" type="submit" disabled={disabled}>
+        <button className="primary" type="submit">
           추가
         </button>
       </form>

@@ -21,8 +21,9 @@ export class Week {
   @Column({ type: 'bigint', default: 0, transformer: bigintTransformer })
   salesAfter: number;
 
-  @Column({ default: false })
-  confirmed: boolean;
+  // 수동 잠금. true/false = 누가 직접 잠금/해제, null = 자동 (확정일 00:00 KST가 지나면 잠김). lock.ts 참고
+  @Column({ type: 'boolean', nullable: true })
+  manualLock: boolean | null;
 
   @Column({ type: 'datetime', nullable: true })
   confirmedAt: Date | null;

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { Clock } from '../common/clock';
 import { Expense } from '../expenses/expense.entity';
 import { MembersModule } from '../members/members.module';
 import { SettlementService } from '../settlement/settlement.service';
@@ -14,6 +15,6 @@ import { WeeksService } from './weeks.service';
     MembersModule,
   ],
   controllers: [WeeksController],
-  providers: [WeeksService, SettlementService],
+  providers: [WeeksService, SettlementService, Clock],
 })
 export class WeeksModule {}

@@ -18,8 +18,7 @@ export interface ImportWeek {
   confirmDate: string;
   salesBefore: number;
   salesAfter: number;
-  confirmed: boolean;
-  confirmedBy: 'manual' | 'auto'; // manualLock 값인지, 자동 규칙으로 계산했는지
+  manualLock: boolean | null; // 원본 그대로. null = 자동 (src/weeks/lock.ts)
   materials: number[]; // 멤버 id 1~5 순서
   expenses: ImportExpense[];
 }
@@ -67,14 +66,9 @@ function money(value: unknown, where: string, min: number): number {
   return value;
 }
 
-// 확정일 00시 KST가 지났으면 확정 (기존 앱의 manualLock = null 규칙)
-export function isAutoConfirmed(confirmDate: string, now: Date): boolean {
-  return now.getTime() >= Date.parse(`${confirmDate}T00:00:00+09:00`);
-}
-
 // _data 시트 한 행 → ImportWeek. "week:..." 가 아닌 key는 null (건너뜀)
 // 값이 하나라도 이상하면 건너뛰지 않고 SheetDataError로 멈춘다
-export function mapWeekRow(key: string, json: string, now: Date): ImportWeek | null {
+export function mapWeekRow(key: string, json: string): ImportWeek | null {
   const m = /^week:(.*)$/.exec(key);
   if (!m) return null;
   const confirmDate = m[1];
@@ -132,8 +126,7 @@ export function mapWeekRow(key: string, json: string, now: Date): ImportWeek | n
     confirmDate,
     salesBefore: money(d.before, at('before'), 0),
     salesAfter: money(d.after, at('after'), 0),
-    confirmed: lock ?? isAutoConfirmed(confirmDate, now),
-    confirmedBy: lock == null ? 'auto' : 'manual',
+    manualLock: lock ?? null,
     materials,
     expenses,
   };

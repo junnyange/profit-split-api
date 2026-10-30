@@ -6,6 +6,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   ObjectLiteral, QueryDeepPartialEntity, QueryFailedError, Repository,
 } from 'typeorm';
+import { Clock } from '../common/clock';
 import { Expense } from '../expenses/expense.entity';
 import { MembersService } from '../members/members.service';
 import { SettlementService } from '../settlement/settlement.service';
@@ -13,6 +14,7 @@ import { Contribution } from './contribution.entity';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateContributionDto } from './dto/update-contribution.dto';
 import { UpdateSalesDto } from './dto/update-sales.dto';
+import { isWeekLocked } from './lock';
 import { Week } from './week.entity';
 
 @Injectable()
@@ -27,8 +29,13 @@ export class WeeksService {
     private readonly membersService: MembersService,
     private readonly settlementService: SettlementService,
     config: ConfigService,
+    private readonly clock: Clock,
   ) {
     this.lockConfirmed = config.get('LOCK_CONFIRMED_WEEKS') === 'true';
+  }
+
+  private isLocked(confirmDate: string, week: Pick<Week, 'manualLock'> | null): boolean {
+    return isWeekLocked(confirmDate, week?.manualLock ?? null, this.clock.now());
   }
 
   // 조회 전용: 주차가 없어도 만들지 않고 0 / 빈 목록으로 채운다
@@ -43,13 +50,16 @@ export class WeeksService {
     ]);
     const rowOf = (memberId: number) =>
       week?.contributions.find((c) => c.memberId === memberId);
+    const confirmed = this.isLocked(confirmDate, week);
 
     return {
       confirmDate,
       version: week?.version ?? 0,
       salesBefore: week?.salesBefore ?? 0,
       salesAfter: week?.salesAfter ?? 0,
-      confirmed: week?.confirmed ?? false,
+      confirmed, // 지금 잠겨 있는지 (수동 설정 또는 자동 규칙)
+      manualLock: week?.manualLock ?? null, // null이면 자동
+      materialsLocked: this.lockConfirmed && confirmed, // 원자재 입력이 막혀 있는지 (화면이 미리 잠그도록)
       contributions: members.map((m) => ({
         memberId: m.id,
         name: m.name,
@@ -66,7 +76,6 @@ export class WeeksService {
 
   async updateSales(confirmDate: string, dto: UpdateSalesDto) {
     const { version, salesBefore, salesAfter } = dto;
-    this.assertWritable(await this.weeks.findOneBy({ confirmDate }));
     if (version === 0) {
       await this.insertOrConflict(confirmDate, () =>
         this.weeks.insert({ confirmDate, salesBefore, salesAfter }),
@@ -87,7 +96,7 @@ export class WeeksService {
     const { version, materialAmount } = dto;
     await this.membersService.assertExists(memberId);
     const week = await this.getOrCreateWeek(confirmDate);
-    this.assertWritable(week);
+    this.assertMaterialsWritable(week);
     if (version === 0) {
       await this.insertOrConflict(confirmDate, () =>
         this.contributions.insert({ weekId: week.id, memberId, materialAmount }),
@@ -101,15 +110,26 @@ export class WeeksService {
     return this.getWeek(confirmDate);
   }
 
-  async setConfirmed(confirmDate: string, confirmed: boolean, version: number) {
+  async confirm(confirmDate: string, version: number) {
     const week = await this.weeks.findOneBy({ confirmDate });
     if (!week) throw new NotFoundException(`${confirmDate} 주차가 없습니다`);
-    // 이미 원하는 상태면 version과 상관없이 지금 상태 그대로 200 (멱등)
-    if (week.confirmed !== confirmed) {
+    // 이미 잠겨 있으면(수동이든 자동이든) version과 상관없이 지금 상태 그대로 200 (멱등)
+    if (!this.isLocked(confirmDate, week)) {
       await this.updateWithVersion(this.weeks, confirmDate, { id: week.id }, version, {
-        confirmed,
-        confirmedAt: confirmed ? new Date() : null,
+        manualLock: true,
+        confirmedAt: this.clock.now(),
       });
+    }
+    return this.getWeek(confirmDate);
+  }
+
+  // 잠금 해제는 접속 코드만 있으면 언제든: version 검사 없이 항상 성공, 이미 풀려 있으면 그대로 200.
+  // 자동으로 잠긴 주도 manualLock=false로 저장해서 다시 잠기지 않게 한다.
+  async unconfirm(confirmDate: string) {
+    const existing = await this.weeks.findOneBy({ confirmDate });
+    if (this.isLocked(confirmDate, existing)) {
+      const week = existing ?? (await this.getOrCreateWeek(confirmDate)); // 행이 없는 지난 주 (자동 잠김)
+      await this.weeks.update(week.id, { manualLock: false, confirmedAt: null });
     }
     return this.getWeek(confirmDate);
   }
@@ -119,7 +139,6 @@ export class WeeksService {
       await this.membersService.assertExists(dto.buyerId);
     }
     const week = await this.getOrCreateWeek(confirmDate);
-    this.assertWritable(week);
     const { id, item, category, amount, buyerId } = await this.expenses.save(
       this.expenses.create({
         weekId: week.id,
@@ -132,14 +151,12 @@ export class WeeksService {
     return { id, item, category, amount, buyerId };
   }
 
+  // 잠긴 주에서도 지출 추가/삭제, 판매 금액 수정은 허용 (막는 것은 원자재뿐)
   async deleteExpense(id: number): Promise<void> {
-    const expense = await this.expenses.findOne({
-      where: { id },
-      relations: { week: true },
-    });
-    if (!expense) throw new NotFoundException(`지출 ${id}이(가) 없습니다`);
-    this.assertWritable(expense.week);
-    await this.expenses.delete(id);
+    const result = await this.expenses.delete(id);
+    if (!result.affected) {
+      throw new NotFoundException(`지출 ${id}이(가) 없습니다`);
+    }
   }
 
   // 정산 결과는 저장하지 않고 매번 계산한다
@@ -222,12 +239,12 @@ export class WeeksService {
 
   // shortcut: 확정 여부를 읽은 뒤 쓰므로, confirm과 거의 동시에 들어온 수정 1건은 통과할 수 있다.
   // 문제가 되면 트랜잭션 + week 행 SELECT ... FOR UPDATE로 바꿀 것.
-  private assertWritable(week: Week | null): void {
-    if (this.lockConfirmed && week?.confirmed) {
+  private assertMaterialsWritable(week: Week): void {
+    if (this.lockConfirmed && this.isLocked(week.confirmDate, week)) {
       throw new ConflictException({
         statusCode: 409,
         code: 'WEEK_CONFIRMED',
-        message: '확정된 주입니다. 확정 해제 후 수정하세요',
+        message: '확정된 주라 원자재 생산 금액은 바꿀 수 없어요. 확정 해제 후 수정하세요',
       });
     }
   }

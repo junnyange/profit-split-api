@@ -55,11 +55,29 @@ $ npm run dev        # http://localhost:5173 , /api 요청은 localhost:3000으�
 
 ## 환경변수
 
-`.env`에 DB 접속 정보(`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`) 외에 아래 값을 둘 수 있다.
+`.env`에 DB 접속 정보(`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`) 외에 아래 값을 둔다. 실제 값은 문서나 커밋에 쓰지 않는다.
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `LOCK_CONFIRMED_WEEKS` | `false` | `"true"`일 때만 확정된 주의 판매 금액, 원자재, 지출 추가/삭제를 `409 WEEK_CONFIRMED`로 막는다. 값이 없거나 다른 값이면 막지 않는다. 확정 해제(`POST /api/weeks/:confirmDate/unconfirm`)는 항상 허용. 서버 시작 시 한 번 읽으므로 바꾸면 재시작해야 한다. |
+| `APP_ACCESS_CODE` | **필수** | 공용 접속 코드. 없으면 서버가 시작하지 않는다 (잠금 없이 배포되는 것을 막음). 바꾸면 기존 로그인 쿠키가 모두 무효가 된다. |
+| `APP_COOKIE_SECRET` | **필수** | 로그인 쿠키 서명용 비밀값, 32자 이상. 없거나 짧으면 서버가 시작하지 않는다. 생성 예: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `LOCK_CONFIRMED_WEEKS` | `false` | `"true"`일 때만 확정된(잠긴) 주의 **원자재 생산 금액**(`PUT .../contributions/:memberId`)을 `409 WEEK_CONFIRMED`로 막는다. 판매 금액과 지출은 잠긴 뒤에도 수정 가능. 값이 없거나 다른 값이면 막지 않는다. 서버 시작 시 한 번 읽으므로 바꾸면 재시작해야 한다. |
+| `NODE_ENV` | - | `production`이면 로그인 쿠키에 `Secure`를 붙인다 (HTTPS 전용). |
+
+## 접속 코드 (로그인)
+
+- `POST /api/auth/login` `{ "code": "..." }` → 맞으면 `204` + 서명된 httpOnly 쿠키 `ps_auth` (SameSite=Lax, 30일). 틀리면 `401 { code: "INVALID_CODE", remainingAttempts }`.
+- 같은 IP에서 연속 5번 틀리면 15분 동안 `429 { code: "TOO_MANY_ATTEMPTS", retryAfterSeconds }` (맞는 코드여도 429).
+- `POST /api/auth/logout` → 쿠키 삭제.
+- `/api/health`, `/api/auth/*`를 뺀 모든 `/api` 요청은 쿠키가 없거나 틀리면 `401 { code: "UNAUTHORIZED" }`.
+- 실패 기록은 서버 메모리에 있다. 서버 1대 기준이고 재시작하면 초기화된다.
+
+## 확정(잠금) 규칙
+
+- 잠김 여부 = `manualLock`(수동 설정)이 있으면 그 값, 없으면(`null`) **확정일(화요일) 00:00 KST가 지났는지**. 요청마다 계산하므로 그 시각에 서버가 꺼져 있어도 맞다.
+- `POST /api/weeks/:confirmDate/confirm` `{ version }` → `manualLock = true` (version 검사, 이미 잠겼으면 그대로 200).
+- `POST /api/weeks/:confirmDate/unconfirm` (body 없음) → `manualLock = false`. version 검사 없이 항상 성공, 이미 풀려 있으면 그대로 200. 자동으로 잠긴 주를 풀면 다시 잠기지 않는다.
+- `GET /api/weeks/:confirmDate` 응답: `confirmed`(지금 잠겼는지), `manualLock`(null = 자동), `materialsLocked`(원자재 입력이 막혀 있는지 = `LOCK_CONFIRMED_WEEKS` && `confirmed`).
 
 ## DB 마이그레이션
 
@@ -107,7 +125,8 @@ $ npm run verify:sheet            # 다른 주소면 VERIFY_BASE_URL=http://loca
 ```
 
 - 원본에 이상한 값(음수, 숫자가 아닌 금액, 범위 밖 buyer, 모르는 cat 등)이 하나라도 있으면 아무것도 넣지 않고 멈춘 뒤, 어느 주의 어떤 값인지 출력한다.
-- 매핑: `material[i]` → 멤버 id `i+1`, `buyer` 인덱스 → id `+1`(빈 값은 null), `memo` → `item`, `cat` → `category`, `paid` → `distributed`, `manualLock` → `confirmed` (null이면 import 시점에 "확정일 00시 KST가 지났는지"로 계산).
+- 매핑: `material[i]` → 멤버 id `i+1`, `buyer` 인덱스 → id `+1`(빈 값은 null), `memo` → `item`, `cat` → `category`, `paid` → `distributed`, `manualLock` → `manualLock` (원본 그대로, null = 자동 잠금).
+- `verify:sheet`는 `.env`의 `APP_ACCESS_CODE`로 로그인한 뒤 호출하고, `sheet-data.csv`의 `manualLock`과 API의 `manualLock`도 비교한다.
 - 비교 기준: 총 수익, 지출 ×105%, 분배할 금액은 API 값을 반올림해서 시트 표시값과 같은지 본다. 멤버별 %는 0.005 이내, 멤버별 금액은 1원 단위로 정확히 일치해야 한다. 불일치가 있으면 exit 1.
 
 ## 동시 수정 충돌 (낙관적 락)
@@ -116,7 +135,7 @@ $ npm run verify:sheet            # 다른 주소면 VERIFY_BASE_URL=http://loca
 
 - `PUT /api/weeks/:confirmDate/sales` `{ salesBefore, salesAfter, version }`
 - `PUT /api/weeks/:confirmDate/contributions/:memberId` `{ materialAmount, version }`
-- `POST /api/weeks/:confirmDate/confirm`, `POST /api/weeks/:confirmDate/unconfirm` `{ version }`
+- `POST /api/weeks/:confirmDate/confirm` `{ version }` (확정 해제는 version 검사 없음)
 
 그사이 다른 사람이 먼저 수정했으면 `409`와 함께 최신 주차 데이터를 `current`로 돌려준다.
 
