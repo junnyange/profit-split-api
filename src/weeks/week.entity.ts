@@ -11,8 +11,9 @@ export class Week {
   @PrimaryGeneratedColumn()
   id: number;
 
+  // 그 주의 확정일(화요일). 기존 시트 앱의 key 날짜와 같다
   @Column({ type: 'date', unique: true })
-  startDate: string;
+  confirmDate: string;
 
   @Column({ type: 'bigint', default: 0, transformer: bigintTransformer })
   salesBefore: number;

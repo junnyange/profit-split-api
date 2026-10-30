@@ -1,6 +1,7 @@
 import {
-  IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min,
+  IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min,
 } from 'class-validator';
+import { EXPENSE_CATEGORIES, type ExpenseCategory } from '../../expenses/expense.entity';
 
 export class CreateExpenseDto {
   @IsString()
@@ -15,4 +16,8 @@ export class CreateExpenseDto {
   @IsOptional()
   @IsInt()
   buyerId?: number | null;
+
+  @IsOptional()
+  @IsIn(EXPENSE_CATEGORIES)
+  category?: ExpenseCategory | null;
 }

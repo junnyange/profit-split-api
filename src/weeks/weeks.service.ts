@@ -32,10 +32,10 @@ export class WeeksService {
   }
 
   // 조회 전용: 주차가 없어도 만들지 않고 0 / 빈 목록으로 채운다
-  async getWeek(startDate: string) {
+  async getWeek(confirmDate: string) {
     const [week, members] = await Promise.all([
       this.weeks.findOne({
-        where: { startDate },
+        where: { confirmDate },
         relations: { contributions: true, expenses: true },
         order: { expenses: { id: 'ASC' } },
       }),
@@ -45,7 +45,7 @@ export class WeeksService {
       week?.contributions.find((c) => c.memberId === memberId);
 
     return {
-      startDate,
+      confirmDate,
       version: week?.version ?? 0,
       salesBefore: week?.salesBefore ?? 0,
       salesAfter: week?.salesAfter ?? 0,
@@ -56,77 +56,80 @@ export class WeeksService {
         materialAmount: rowOf(m.id)?.materialAmount ?? 0,
         version: rowOf(m.id)?.version ?? 0,
       })),
-      expenses: (week?.expenses ?? []).map(({ id, item, amount, buyerId }) => ({
-        id, item, amount, buyerId,
-      })),
+      expenses: (week?.expenses ?? []).map(
+        ({ id, item, category, amount, buyerId }) => ({
+          id, item, category, amount, buyerId,
+        }),
+      ),
     };
   }
 
-  async updateSales(startDate: string, dto: UpdateSalesDto) {
+  async updateSales(confirmDate: string, dto: UpdateSalesDto) {
     const { version, salesBefore, salesAfter } = dto;
-    this.assertWritable(await this.weeks.findOneBy({ startDate }));
+    this.assertWritable(await this.weeks.findOneBy({ confirmDate }));
     if (version === 0) {
-      await this.insertOrConflict(startDate, () =>
-        this.weeks.insert({ startDate, salesBefore, salesAfter }),
+      await this.insertOrConflict(confirmDate, () =>
+        this.weeks.insert({ confirmDate, salesBefore, salesAfter }),
       );
     } else {
-      await this.updateWithVersion(this.weeks, startDate, { startDate }, version, {
+      await this.updateWithVersion(this.weeks, confirmDate, { confirmDate }, version, {
         salesBefore, salesAfter,
       });
     }
-    return this.getWeek(startDate);
+    return this.getWeek(confirmDate);
   }
 
   async updateContribution(
-    startDate: string,
+    confirmDate: string,
     memberId: number,
     dto: UpdateContributionDto,
   ) {
     const { version, materialAmount } = dto;
     await this.membersService.assertExists(memberId);
-    const week = await this.getOrCreateWeek(startDate);
+    const week = await this.getOrCreateWeek(confirmDate);
     this.assertWritable(week);
     if (version === 0) {
-      await this.insertOrConflict(startDate, () =>
+      await this.insertOrConflict(confirmDate, () =>
         this.contributions.insert({ weekId: week.id, memberId, materialAmount }),
       );
     } else {
       await this.updateWithVersion(
-        this.contributions, startDate, { weekId: week.id, memberId }, version,
+        this.contributions, confirmDate, { weekId: week.id, memberId }, version,
         { materialAmount },
       );
     }
-    return this.getWeek(startDate);
+    return this.getWeek(confirmDate);
   }
 
-  async setConfirmed(startDate: string, confirmed: boolean, version: number) {
-    const week = await this.weeks.findOneBy({ startDate });
-    if (!week) throw new NotFoundException(`${startDate} 주차가 없습니다`);
+  async setConfirmed(confirmDate: string, confirmed: boolean, version: number) {
+    const week = await this.weeks.findOneBy({ confirmDate });
+    if (!week) throw new NotFoundException(`${confirmDate} 주차가 없습니다`);
     // 이미 원하는 상태면 version과 상관없이 지금 상태 그대로 200 (멱등)
     if (week.confirmed !== confirmed) {
-      await this.updateWithVersion(this.weeks, startDate, { id: week.id }, version, {
+      await this.updateWithVersion(this.weeks, confirmDate, { id: week.id }, version, {
         confirmed,
         confirmedAt: confirmed ? new Date() : null,
       });
     }
-    return this.getWeek(startDate);
+    return this.getWeek(confirmDate);
   }
 
-  async addExpense(startDate: string, dto: CreateExpenseDto) {
+  async addExpense(confirmDate: string, dto: CreateExpenseDto) {
     if (dto.buyerId != null) {
       await this.membersService.assertExists(dto.buyerId);
     }
-    const week = await this.getOrCreateWeek(startDate);
+    const week = await this.getOrCreateWeek(confirmDate);
     this.assertWritable(week);
-    const { id, item, amount, buyerId } = await this.expenses.save(
+    const { id, item, category, amount, buyerId } = await this.expenses.save(
       this.expenses.create({
         weekId: week.id,
         item: dto.item,
+        category: dto.category ?? null,
         amount: dto.amount,
         buyerId: dto.buyerId ?? null,
       }),
     );
-    return { id, item, amount, buyerId };
+    return { id, item, category, amount, buyerId };
   }
 
   async deleteExpense(id: number): Promise<void> {
@@ -140,8 +143,8 @@ export class WeeksService {
   }
 
   // 정산 결과는 저장하지 않고 매번 계산한다
-  async getSettlement(startDate: string) {
-    const week = await this.getWeek(startDate);
+  async getSettlement(confirmDate: string) {
+    const week = await this.getWeek(confirmDate);
     const { percents, shares, ...totals } = this.settlementService.calculate({
       materials: week.contributions.map((c) => c.materialAmount),
       salesBefore: week.salesBefore,
@@ -150,7 +153,7 @@ export class WeeksService {
     });
 
     return {
-      startDate,
+      confirmDate,
       members: week.contributions.map((c, i) => ({
         memberId: c.memberId,
         name: c.name,
@@ -162,15 +165,15 @@ export class WeeksService {
     };
   }
 
-  // 동시에 같은 주를 처음 만들면 한쪽은 startDate unique에 걸린다 → 다시 조회해서 먼저 만들어진 걸 쓴다
-  private async getOrCreateWeek(startDate: string): Promise<Week> {
-    const found = await this.weeks.findOneBy({ startDate });
+  // 동시에 같은 주를 처음 만들면 한쪽은 confirmDate unique에 걸린다 → 다시 조회해서 먼저 만들어진 걸 쓴다
+  private async getOrCreateWeek(confirmDate: string): Promise<Week> {
+    const found = await this.weeks.findOneBy({ confirmDate });
     if (found) return found;
     try {
-      return await this.weeks.save(this.weeks.create({ startDate }));
+      return await this.weeks.save(this.weeks.create({ confirmDate }));
     } catch (e) {
       if (!isDuplicateKey(e)) throw e;
-      return this.weeks.findOneByOrFail({ startDate });
+      return this.weeks.findOneByOrFail({ confirmDate });
     }
   }
 
@@ -180,7 +183,7 @@ export class WeeksService {
   // (QueryBuilder update는 version = version + 1을 자동으로 붙인다)
   private async updateWithVersion<T extends ObjectLiteral>(
     repo: Repository<T>,
-    startDate: string,
+    confirmDate: string,
     where: ObjectLiteral,
     version: number,
     set: QueryDeepPartialEntity<T>,
@@ -192,28 +195,28 @@ export class WeeksService {
       .where(where)
       .andWhere('version = :version', { version })
       .execute();
-    if (!affected) throw await this.versionConflict(startDate);
+    if (!affected) throw await this.versionConflict(confirmDate);
   }
 
   // version 0 = "행이 없다고 알고 있음". 그사이 누가 먼저 만들었으면 unique 충돌 → 409
   private async insertOrConflict(
-    startDate: string,
+    confirmDate: string,
     insert: () => Promise<unknown>,
   ): Promise<void> {
     try {
       await insert();
     } catch (e) {
       if (!isDuplicateKey(e)) throw e;
-      throw await this.versionConflict(startDate);
+      throw await this.versionConflict(confirmDate);
     }
   }
 
-  private async versionConflict(startDate: string) {
+  private async versionConflict(confirmDate: string) {
     return new ConflictException({
       statusCode: 409,
       code: 'VERSION_CONFLICT',
       message: '다른 사람이 먼저 수정했습니다. 최신 값을 확인하세요',
-      current: await this.getWeek(startDate),
+      current: await this.getWeek(confirmDate),
     });
   }
 

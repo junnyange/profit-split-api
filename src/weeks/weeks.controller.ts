@@ -13,52 +13,52 @@ import { WeeksService } from './weeks.service';
 export class WeeksController {
   constructor(private readonly weeksService: WeeksService) {}
 
-  @Get('weeks/:startDate')
-  getWeek(@Param('startDate', ParseDatePipe) startDate: string) {
-    return this.weeksService.getWeek(startDate);
+  @Get('weeks/:confirmDate')
+  getWeek(@Param('confirmDate', ParseDatePipe) confirmDate: string) {
+    return this.weeksService.getWeek(confirmDate);
   }
 
-  @Put('weeks/:startDate/sales')
+  @Put('weeks/:confirmDate/sales')
   updateSales(
-    @Param('startDate', ParseDatePipe) startDate: string,
+    @Param('confirmDate', ParseDatePipe) confirmDate: string,
     @Body() dto: UpdateSalesDto,
   ) {
-    return this.weeksService.updateSales(startDate, dto);
+    return this.weeksService.updateSales(confirmDate, dto);
   }
 
-  @Put('weeks/:startDate/contributions/:memberId')
+  @Put('weeks/:confirmDate/contributions/:memberId')
   updateContribution(
-    @Param('startDate', ParseDatePipe) startDate: string,
+    @Param('confirmDate', ParseDatePipe) confirmDate: string,
     @Param('memberId', ParseIntPipe) memberId: number,
     @Body() dto: UpdateContributionDto,
   ) {
-    return this.weeksService.updateContribution(startDate, memberId, dto);
+    return this.weeksService.updateContribution(confirmDate, memberId, dto);
   }
 
-  @Post('weeks/:startDate/confirm')
+  @Post('weeks/:confirmDate/confirm')
   @HttpCode(200)
   confirm(
-    @Param('startDate', ParseDatePipe) startDate: string,
+    @Param('confirmDate', ParseDatePipe) confirmDate: string,
     @Body() dto: VersionDto,
   ) {
-    return this.weeksService.setConfirmed(startDate, true, dto.version);
+    return this.weeksService.setConfirmed(confirmDate, true, dto.version);
   }
 
-  @Post('weeks/:startDate/unconfirm')
+  @Post('weeks/:confirmDate/unconfirm')
   @HttpCode(200)
   unconfirm(
-    @Param('startDate', ParseDatePipe) startDate: string,
+    @Param('confirmDate', ParseDatePipe) confirmDate: string,
     @Body() dto: VersionDto,
   ) {
-    return this.weeksService.setConfirmed(startDate, false, dto.version);
+    return this.weeksService.setConfirmed(confirmDate, false, dto.version);
   }
 
-  @Post('weeks/:startDate/expenses')
+  @Post('weeks/:confirmDate/expenses')
   addExpense(
-    @Param('startDate', ParseDatePipe) startDate: string,
+    @Param('confirmDate', ParseDatePipe) confirmDate: string,
     @Body() dto: CreateExpenseDto,
   ) {
-    return this.weeksService.addExpense(startDate, dto);
+    return this.weeksService.addExpense(confirmDate, dto);
   }
 
   @Delete('expenses/:id')
@@ -67,8 +67,8 @@ export class WeeksController {
     return this.weeksService.deleteExpense(id);
   }
 
-  @Get('weeks/:startDate/settlement')
-  getSettlement(@Param('startDate', ParseDatePipe) startDate: string) {
-    return this.weeksService.getSettlement(startDate);
+  @Get('weeks/:confirmDate/settlement')
+  getSettlement(@Param('confirmDate', ParseDatePipe) confirmDate: string) {
+    return this.weeksService.getSettlement(confirmDate);
   }
 }

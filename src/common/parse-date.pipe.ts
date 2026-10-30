@@ -8,7 +8,7 @@ export class ParseDatePipe implements PipeTransform<string, string> {
       /^\d{4}-\d{2}-\d{2}$/.test(value) &&
       new Date(`${value}T00:00:00Z`).toISOString().startsWith(value);
     if (!valid) {
-      throw new BadRequestException('startDate는 YYYY-MM-DD 형식이어야 합니다');
+      throw new BadRequestException('confirmDate는 YYYY-MM-DD 형식이어야 합니다');
     }
     return value;
   }

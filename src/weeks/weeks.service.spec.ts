@@ -13,7 +13,7 @@ const MEMBERS = [1, 2, 3, 4, 5].map((id) => ({ id, name: `m${id}` }) as Member);
 
 // UPDATE ... WHERE version = ? 결과로 affected 행 수를 돌려주는 QueryBuilder mock
 function queryBuilder(affected: number) {
-  const qb = {
+  const qb: Record<'update' | 'set' | 'where' | 'andWhere' | 'execute', jest.Mock> = {
     update: jest.fn(() => qb),
     set: jest.fn(() => qb),
     where: jest.fn(() => qb),
@@ -61,7 +61,7 @@ async function conflictBody(p: Promise<unknown>) {
   return (e as ConflictException).getResponse() as Record<string, unknown>;
 }
 
-const WEEK = { id: 7, startDate: '2099-01-05', version: 3, confirmed: false, contributions: [], expenses: [] };
+const WEEK = { id: 7, confirmDate: '2099-01-05', version: 3, confirmed: false, contributions: [], expenses: [] };
 const SALES = { salesBefore: 0, salesAfter: 100 };
 
 describe('WeeksService 낙관적 락', () => {

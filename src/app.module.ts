@@ -1,29 +1,17 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { dataSourceOptions } from './data-source';
 import { MembersModule } from './members/members.module';
 import { WeeksModule } from './weeks/weeks.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    TypeOrmModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'mysql',
-        host: config.get<string>('DB_HOST'),
-        port: Number(config.get('DB_PORT')),
-        username: config.get<string>('DB_USERNAME'),
-        password: config.get<string>('DB_PASSWORD'),
-        database: config.get<string>('DB_DATABASE'),
-        entities: [__dirname + '/**/*.entity{.ts,.js}'],
-        synchronize: true, // 개발 중에만 사용
-        timezone: '+09:00',
-        logging: ['error', 'schema'],
-      }),
-    }),
+    // TypeORM CLI와 같은 설정 (synchronize: false, 마이그레이션 자동 실행 안 함)
+    TypeOrmModule.forRoot(dataSourceOptions),
     MembersModule,
     WeeksModule,
   ],

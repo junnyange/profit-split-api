@@ -6,6 +6,9 @@ import { bigintTransformer } from '../common/bigint.transformer';
 import { Member } from '../members/member.entity';
 import { Week } from '../weeks/week.entity';
 
+export const EXPENSE_CATEGORIES = ['가계부', '지출'] as const;
+export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
+
 @Entity('expenses')
 export class Expense {
   @PrimaryGeneratedColumn()
@@ -20,6 +23,10 @@ export class Expense {
 
   @Column({ length: 100 })
   item: string;
+
+  // 기존 시트 앱의 cat. API로 넣을 때 생략하면 null
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  category: ExpenseCategory | null;
 
   @Column({ type: 'bigint', transformer: bigintTransformer })
   amount: number;
