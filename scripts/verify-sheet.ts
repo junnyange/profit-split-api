@@ -1,4 +1,4 @@
-// 정산기록 시트(data/sheet-summary.csv)와 GET /weeks/:confirmDate/settlement 결과를 주차마다 비교한다.
+// 정산기록 시트(data/sheet-summary.csv)와 GET /api/weeks/:confirmDate/settlement 결과를 주차마다 비교한다.
 //   npm run verify:sheet            (서버: VERIFY_BASE_URL, 기본 http://localhost:3001)
 // 헤더에는 멤버 실명이 있어서 열 이름이 아니라 위치로 읽는다.
 import { readFileSync } from 'node:fs';
@@ -32,8 +32,8 @@ async function main() {
 
   for (const row of rows) {
     const week = row[COL.date];
-    const api = await getJson<Settlement>(`/weeks/${week}/settlement`);
-    const { confirmed } = await getJson<{ confirmed: boolean }>(`/weeks/${week}`);
+    const api = await getJson<Settlement>(`/api/weeks/${week}/settlement`);
+    const { confirmed } = await getJson<{ confirmed: boolean }>(`/api/weeks/${week}`);
     const add = (field: string, sheet: number | string, apiValue: number | string, ok: boolean, kind: Check['kind']) =>
       checks.push({ week, field, sheet, api: apiValue, ok, kind });
 

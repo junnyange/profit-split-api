@@ -275,3 +275,90 @@
 - 지출 응답에 `distributed`는 아직 없음 (DB에는 들어감). 미정산 합계 기능과 같이 정할 것.
 - 새 DB에서 멤버 seed 방법 (지난 항목에서 이어짐).
 - 지난 항목에서 이어지는 일: 확정 주 차단 경쟁 조건, 지출이 week version을 올리지 않는 점, 409 `current` 프론트 처리, 응답의 멤버 `name` 공개 범위, `fee` 등 소수 표시, 배포용 마이그레이션 실행 스크립트(dist), `.env` 중복 블록 정리.
+
+### 2026-10-30 - React 화면(web/) + API prefix(/api) + 헬스체크
+
+**만든/수정한 파일과 각 역할**
+- 백엔드
+  - `src/main.ts` (수정): `app.setGlobalPrefix('api')`. 모든 API가 `/api/...`가 됨.
+  - `src/health.controller.ts` (새 파일): `GET /api/health`. DB에 `SELECT 1`이 되면 `200 {status:'ok', db:'up'}`, 실패하면 `503 {status:'error', db:'down'}`.
+  - `src/health.controller.spec.ts` (새 파일): 성공/503 단위 테스트 2개.
+  - `src/app.controller.ts`, `app.service.ts`, `app.controller.spec.ts` (삭제): Nest 시작 템플릿의 `GET /` "Hello World!". 헬스체크로 대체.
+  - `src/app.module.ts` (수정): `HealthController` 등록, AppController/AppService 제거.
+  - `test/app.e2e-spec.ts` (수정): prefix를 똑같이 붙이고 `GET /api/health`를 확인하도록 바꿈 (실제 DB 필요, `npm test`에는 포함 안 됨).
+  - `scripts/verify-sheet.ts` (수정): 호출 경로에 `/api` 추가.
+  - `tsconfig.json` (수정): `"exclude": ["node_modules", "dist", "web"]`. 루트 타입 검사가 web(React, DOM 타입)을 읽지 않게 함.
+- 프론트엔드 `web/` (새 폴더, Vite + React 19 + TypeScript)
+  - `package.json`: 의존성은 react, react-dom 둘뿐. 개발용은 vite, @vitejs/plugin-react, typescript, @types/react(-dom). `"type": "module"`은 넣지 않음 (아래 결정 참고).
+  - `vite.config.mts`: `/api` → `API_TARGET`(기본 `http://localhost:3000`) proxy. dev와 preview 모두.
+  - `tsconfig.json`, `index.html`, `.gitignore`(web/node_modules, web/dist).
+  - `src/main.tsx`: React를 `#root`에 붙이는 시작점.
+  - `src/App.tsx`: 화면 전체 상태(주차, 주차 데이터, 정산, 안내)를 가짐. 불러오기, 저장 큐, 에러 처리, 원자재/판매 금액 입력.
+  - `src/api.ts`: API 호출 함수와 응답 타입. HTTP 에러를 사용자용 문장으로 바꿔 `ApiError`로 던짐.
+  - `src/week.ts`: 이번 주 키 계산, 주 이동, 날짜 검사, 금액 표시(쉼표). React와 무관한 순수 함수.
+  - `src/week.spec.ts`: 위 함수 테스트 7개. 루트 `npm test`(jest)가 같이 실행함.
+  - `src/components/MoneyInput.tsx`: 입력 중 쉼표가 붙는 금액 칸. blur 또는 Enter 때만 저장, 커서 위치 유지.
+  - `src/components/WeekHeader.tsx`: 이전/다음/이번 주 버튼, 확정 상태 배지, 확정/확정 해제 버튼.
+  - `src/components/ExpenseSection.tsx`: 지출 목록(구분, 항목, 매입자, 금액, 삭제)과 추가 폼(항목, 금액, 구분, 매입자 드롭다운: 없음 포함).
+  - `src/components/SettlementSection.tsx`: 멤버별 %/금액, 총 수익, 수수료, 지출 ×105%, 분배할 금액, 남는 금액.
+  - `src/components/NoticeBar.tsx`: 화면 위에 고정되는 안내. 409/400/404/네트워크 오류 문장과 "내가 입력한 값".
+  - `src/styles.css`: 휴대폰 우선 스타일 (한 열, 최대 560px, 버튼/입력 높이 44px, 글자 16px → iOS 입력 확대 방지).
+- `README.md` (수정): 실행 방법(API 서버, web 개발 서버, 다른 포트, 휴대폰 접속), 경로를 `/api/...`로 수정.
+
+**내린 설계 결정과 이유**
+- **"이번 주" 키 규칙**: 주차 키 = 확정일(화요일)이고, 확정일 00시 KST가 되면 그 주는 확정됨 (지난 단계 결정). 그래서 이번 주 = **오늘(KST) 이후 첫 화요일**. 화요일 당일이면 다음 주 화요일. 2026-10-30(금) 기준 2026-11-03이고, 시트의 "수정 가능" 주와 같음. 브라우저 시간대와 관계없이 KST로 계산함 (테스트로 확인).
+- **주소 해시 `#YYYY-MM-DD`**: 새로고침해도 같은 주가 열리고, 두 탭이나 링크로 같은 주를 열 수 있음. 라우터 라이브러리는 넣지 않음.
+- **저장 후 항상 다시 불러오기**: 저장이 성공하든 실패하든 끝나면 주차와 정산을 다시 GET함. 지출 추가/삭제는 week version을 바꾸지 않으므로, version을 비교해서 "바뀐 게 없다"고 판단하는 코드는 아예 두지 않음. 정산도 항상 서버 값을 씀 (화면은 계산하지 않음).
+- **저장 큐 + 최신 version**: 저장 요청은 한 번에 하나씩 보내고, 보낼 때 가장 최근에 받은 주차 데이터의 version을 씀 (`weekRef`). 판매 전을 저장하자마자 판매 후를 저장해도 내 요청끼리 409가 나지 않음.
+- **409 VERSION_CONFLICT**: 응답의 `current`로 바로 다시 그리고, 안내와 함께 "내가 입력한 값: 판매 후 2,000,000원"을 보여줌. 입력칸은 최신 값으로 바뀌고, 내 값은 안내에 남음.
+- **409 WEEK_CONFIRMED**: 서버의 `LOCK_CONFIRMED_WEEKS` 설정을 화면은 미리 알 수 없음. 그래서 이 응답을 한 번 받으면 "서버가 확정 주를 막는다"고 기억하고, 확정된 주의 입력칸, 지출 폼, 삭제 버튼을 잠금. 확정 해제 버튼은 항상 열어 둠.
+- **400/404/5xx/네트워크**: 상태 코드별로 문장을 정함. 404 예: "대상을 찾을 수 없어요. 이미 삭제됐거나 아직 저장된 내용이 없어요". class-validator의 영어 메시지는 보여주지 않음.
+- **입력칸 동기화**: 입력 중인 칸은 다른 저장 결과가 와도 덮어쓰지 않음. 서버에서 새로 받아올 때(`loadCount` 증가)만 입력 중이 아닌 칸을 서버 값으로 맞춤. 그래서 blur 직후 옛 값이 잠깐 보였다 바뀌는 깜빡임이 없음.
+- **지출 추가 버튼은 금액 입력 중에도 눌림**: 금액은 blur 때 반영되므로, 금액이 0이라고 버튼을 막아 두면 휴대폰에서 첫 탭이 무시됨. 검사는 제출할 때 하고, 비어 있으면 안내 문구를 보여줌.
+- **확정 버튼**: 아직 저장된 내용이 없는 주(version 0)는 서버가 404를 주므로 비활성화.
+- **표시 반올림**: `fee`, `distributable` 등은 소수일 수 있어서 화면에서만 원 단위로 반올림. 시트 표시와 같음.
+- **web의 테스트를 루트 jest로**: vitest를 추가하지 않으려고, DOM이 필요 없는 `week.ts`만 루트 jest가 테스트함. web/package.json에 `"type": "module"`이 있으면 ts-jest가 ESM으로 처리하려 해서, 넣지 않고 Vite 설정만 `.mts`로 둠.
+- **create-vite 템플릿 대신 직접 작성**: 템플릿은 ESLint 등 의존성이 많아서 필요한 파일만 직접 만듦.
+- **web의 TypeScript는 ^6**: 최신은 7.x지만 루트와 같은 6을 씀.
+- **헬스체크는 직접 구현**: `@nestjs/terminus`는 추가하지 않고 컨트롤러 하나로 처리.
+
+**중간에 난 에러와 해결 방법**
+- `git rm`으로 시작 템플릿 파일을 지웠더니 삭제가 git index에 staged 됨. 커밋은 사용자가 하므로 `git reset HEAD -- <파일>`로 staging만 되돌림. 파일은 삭제된 상태로 둠 (`git status`에 ` D`로 보임).
+- 루트의 `/node_modules`, `/dist`는 루트에만 적용되어 `web/node_modules`가 무시되지 않음. `web/.gitignore` 추가.
+- `React.ChangeEvent`를 import 없이 쓰면 UMD 전역 참조 문제가 생길 수 있어서 `import { type ChangeEvent } from 'react'`로 바꿈.
+- 지출 추가 버튼 첫 탭이 무시되는 문제(위 결정)를 브라우저 확인 전에 코드 검토 중 발견해서 수정함.
+- headless Edge 실행 명령은 바로 종료되지만(런처) 실제 브라우저는 9222에서 계속 동작함. 끝난 뒤 scratch 프로필을 쓰는 msedge 프로세스만 골라서 종료함 (사용자의 Edge는 건드리지 않음).
+
+**확인한 방법과 결과**
+- `cd web && npm run build` (tsc + vite build): 에러 없음. JS 230kB (gzip 73kB).
+- 루트 `npm run build`: 에러 없음.
+- 루트 `npx tsc --noEmit -p tsconfig.json`: 에러 없음.
+- 루트 `npm test`: 5 suites, **30 tests** 모두 통과 (기존 22 - Hello World 1 + health 2 + week 7).
+- `GET /api/health` → `{"status":"ok","db":"up"}`. Vite proxy를 거쳐도 같음. prefix 없는 `/weeks/...` → 404.
+- `verify:sheet` 다시 실행: 15/15 일치 (경로 변경 후에도 동작).
+- **두 탭 브라우저 확인**:
+  - 방법: headless Edge + Chrome DevTools Protocol 스크립트(scratchpad, 커밋 안 됨). 휴대폰 크기 390×844로 같은 주(`#2099-01-05`)를 탭 A, B에 열고, 실제 입력 이벤트(`Input.insertText`), blur, Enter로 조작함.
+  - 서버: API 3001(`LOCK_CONFIRMED_WEEKS=true`), Vite 5173(`API_TARGET=http://localhost:3001`).
+  - 결과: **18/18 통과**.
+    - 판매 후: A 저장 → B(옛 version)가 저장 → B에 409 안내 + "내가 입력한 값: 판매 후 2,000,000원", B 입력칸은 A의 값으로 바뀜, DB는 A의 값.
+    - 원자재(멤버 1): 같은 방식으로 409, 내 값 7,000원 표시, 칸은 5,000.
+    - 쉼표: 한 글자씩 입력하는 중에 `1,234` → `1,234,567`. blur 저장 확인, Enter 저장 확인.
+    - 지출 추가: 목록 표시, 구분과 매입자 저장, **week version 3 → 3 그대로인데 정산의 지출 ×105%가 52,500으로 갱신**, 폼 초기화.
+    - 404: A가 지운 지출을 B가 삭제 → "대상을 찾을 수 없어요" 안내.
+    - 확정: A가 확정 → B가 수정 → WEEK_CONFIRMED 안내, B 입력칸 잠김. B가 확정 해제 → 다시 열림.
+    - 오프라인(CDP 네트워크 차단) → "서버에 연결할 수 없어요" + 내 입력 777원 표시.
+    - 이번 주 버튼 → `#2026-11-03`.
+  - 스크린샷(휴대폰 크기)으로 레이아웃 확인: 한 열, 안내가 맨 위에 고정, 잠긴 칸은 회색.
+  - 400은 화면에서 만들 수 있는 경로가 없어서 브라우저로 확인하지 못함 (입력칸이 숫자만 받고, 항목은 maxLength 100, 빈 값은 화면에서 막음). 문장 매핑은 코드로만 확인.
+- 확인 후 2099-01-05 주차 삭제. 실제 주차 3개(10-20, 10-27, 11-03)는 version 1/1/1, contributions 15건, expenses 13건으로 그대로 (화면에서 실제 주차는 GET만 함). 3001, 5173, headless Edge 모두 종료.
+
+**아직 남은 일 / 확인이 필요한 점**
+- **배포 때 같은 서버에서 화면 서비스**: Nest에서 `web/dist`를 정적 파일로 서비스하는 설정(`@nestjs/serve-static` 또는 express static), `/api` 외 경로를 index.html로. 아직 안 함.
+- **매입자별 미정산 합계**: 받을 돈 = 지출 원금(`amount`)으로 결정됨. 기능(범위: 전체 주/주차별, 대상 cat)은 아직 정하지 않았고 구현도 안 함. 화면에 `distributed`(정산 완료) 표시도 그때 같이.
+- **실시간 갱신 없음**: 다른 사람이 수정해도 내가 저장하거나 주를 옮기기 전까지 화면은 그대로임. 저장할 때 409로 알게 됨. 필요하면 주기적 새로고침이나 탭 포커스 시 새로고침을 추가할 것.
+- **409 안내에서 "내 값 다시 적용" 버튼 없음**: 지금은 사용자가 다시 입력해야 함.
+- **확정 해제/확정 충돌 시 안내 문구**: "내가 입력한 값: 확정"처럼 어색하게 나옴. 문구 다듬기.
+- **커서 위치 복원**은 숫자 개수 기준. 가운데를 지우거나 붙여넣을 때 휴대폰 실기기에서는 확인 못 함 (headless 데스크톱 엔진에서만 확인).
+- **실제 휴대폰(iOS Safari, Android Chrome)에서 확인 필요**: 숫자 키패드(`inputMode="numeric"`), 입력 확대, 안내 고정 위치.
+- **시작 템플릿 파일 삭제가 staged 되지 않은 상태**로 남아 있음. 커밋할 때 함께 포함할 것 (`git add -A` 또는 `git rm --cached`).
+- 지난 항목에서 이어지는 일: 자동 확정 규칙 없음(11-03이 지나도 자동 확정 안 됨), 확정 주 차단 경쟁 조건, 응답의 멤버 `name` 공개 범위, 배포용 마이그레이션 실행 스크립트(dist), 새 DB 멤버 seed, `.env` 중복 블록 정리.

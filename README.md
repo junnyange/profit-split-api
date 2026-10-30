@@ -31,13 +31,35 @@
 $ npm install
 ```
 
+## 실행 방법 (API 서버 + 화면)
+
+API는 모두 `/api`로 시작한다 (예: `GET /api/weeks/2026-11-03`). 헬스체크는 `GET /api/health` → DB에 붙으면 `200 {"status":"ok","db":"up"}`, 안 되면 `503`.
+
+```bash
+# 1) DB (docker) - 처음 한 번 또는 꺼져 있을 때
+$ docker compose up -d
+
+# 2) API 서버 (루트, 포트 3000)
+$ npm run start:dev
+
+# 3) 화면 개발 서버 (web/, 포트 5173) - 다른 터미널에서
+$ cd web
+$ npm install        # 처음 한 번
+$ npm run dev        # http://localhost:5173 , /api 요청은 localhost:3000으로 proxy
+```
+
+- API를 다른 포트로 띄웠다면: `API_TARGET=http://localhost:3001 npm run dev` (web/에서).
+- 휴대폰에서 같은 Wi-Fi로 보려면: `npm run dev -- --host` 후 표시되는 Network 주소로 접속.
+- 주소 뒤에 `#2026-11-03`을 붙이면 그 주차가 열린다. 붙이지 않으면 "이번 주" = 오늘(KST) 이후 첫 화요일.
+- 화면 빌드: `cd web && npm run build` → `web/dist/`. (같은 서버에서 화면을 서비스하는 설정은 배포 단계에서 할 예정)
+
 ## 환경변수
 
 `.env`에 DB 접속 정보(`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`) 외에 아래 값을 둘 수 있다.
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `LOCK_CONFIRMED_WEEKS` | `false` | `"true"`일 때만 확정된 주의 판매 금액, 원자재, 지출 추가/삭제를 `409 WEEK_CONFIRMED`로 막는다. 값이 없거나 다른 값이면 막지 않는다. 확정 해제(`POST /weeks/:confirmDate/unconfirm`)는 항상 허용. 서버 시작 시 한 번 읽으므로 바꾸면 재시작해야 한다. |
+| `LOCK_CONFIRMED_WEEKS` | `false` | `"true"`일 때만 확정된 주의 판매 금액, 원자재, 지출 추가/삭제를 `409 WEEK_CONFIRMED`로 막는다. 값이 없거나 다른 값이면 막지 않는다. 확정 해제(`POST /api/weeks/:confirmDate/unconfirm`)는 항상 허용. 서버 시작 시 한 번 읽으므로 바꾸면 재시작해야 한다. |
 
 ## DB 마이그레이션
 
@@ -63,7 +85,7 @@ $ npm run migration:show
 
 ## 주차 날짜 (`confirmDate`)
 
-주차는 그 주의 **확정일(화요일)** `YYYY-MM-DD`로 부른다 (`/weeks/:confirmDate/...`). 기존 시트 앱의 key 날짜와 같다. 예전 이름 `startDate`는 마이그레이션 `RenameStartDateAddCategory`에서 바뀌었다.
+주차는 그 주의 **확정일(화요일)** `YYYY-MM-DD`로 부른다 (`/api/weeks/:confirmDate/...`). 기존 시트 앱의 key 날짜와 같다. 예전 이름 `startDate`는 마이그레이션 `RenameStartDateAddCategory`에서 바뀌었다.
 
 ## 기존 시트 앱 데이터 옮기기
 
@@ -79,9 +101,9 @@ $ npm run import:sheet -- --dry-run
 # 주차마다 트랜잭션으로 넣기. 다시 실행하면 그 주의 contributions/expenses를 교체 (중복 없음)
 $ npm run import:sheet
 
-# 서버를 띄운 뒤, 주차마다 GET /weeks/:confirmDate/settlement 결과와 정산기록 시트 비교
+# 서버를 띄운 뒤, 주차마다 GET /api/weeks/:confirmDate/settlement 결과와 정산기록 시트 비교
 $ PORT=3001 npm run start:prod
-$ npm run verify:sheet            # 다른 주소면 VERIFY_BASE_URL=http://localhost:3000 npm run verify:sheet
+$ npm run verify:sheet            # 다른 주소면 VERIFY_BASE_URL=http://localhost:3000 npm run verify:sheet (/api는 스크립트가 붙임)
 ```
 
 - 원본에 이상한 값(음수, 숫자가 아닌 금액, 범위 밖 buyer, 모르는 cat 등)이 하나라도 있으면 아무것도 넣지 않고 멈춘 뒤, 어느 주의 어떤 값인지 출력한다.
@@ -90,16 +112,16 @@ $ npm run verify:sheet            # 다른 주소면 VERIFY_BASE_URL=http://loca
 
 ## 동시 수정 충돌 (낙관적 락)
 
-`GET /weeks/:confirmDate` 응답의 `version`(주차)과 `contributions[].version`(멤버별 원자재)을 수정 요청 body에 그대로 보낸다. 행이 아직 없으면 `0`.
+`GET /api/weeks/:confirmDate` 응답의 `version`(주차)과 `contributions[].version`(멤버별 원자재)을 수정 요청 body에 그대로 보낸다. 행이 아직 없으면 `0`.
 
-- `PUT /weeks/:confirmDate/sales` `{ salesBefore, salesAfter, version }`
-- `PUT /weeks/:confirmDate/contributions/:memberId` `{ materialAmount, version }`
-- `POST /weeks/:confirmDate/confirm`, `POST /weeks/:confirmDate/unconfirm` `{ version }`
+- `PUT /api/weeks/:confirmDate/sales` `{ salesBefore, salesAfter, version }`
+- `PUT /api/weeks/:confirmDate/contributions/:memberId` `{ materialAmount, version }`
+- `POST /api/weeks/:confirmDate/confirm`, `POST /api/weeks/:confirmDate/unconfirm` `{ version }`
 
 그사이 다른 사람이 먼저 수정했으면 `409`와 함께 최신 주차 데이터를 `current`로 돌려준다.
 
 ```json
-{ "statusCode": 409, "code": "VERSION_CONFLICT", "message": "다른 사람이 먼저 수정했습니다. 최신 값을 확인하세요", "current": { "...": "GET /weeks/:confirmDate 와 같은 형식" } }
+{ "statusCode": 409, "code": "VERSION_CONFLICT", "message": "다른 사람이 먼저 수정했습니다. 최신 값을 확인하세요", "current": { "...": "GET /api/weeks/:confirmDate 와 같은 형식" } }
 ```
 
 ## Compile and run the project

@@ -1,8 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { HealthController } from './health.controller';
 import { dataSourceOptions } from './data-source';
 import { MembersModule } from './members/members.module';
 import { WeeksModule } from './weeks/weeks.module';
@@ -15,7 +14,6 @@ import { WeeksModule } from './weeks/weeks.module';
     MembersModule,
     WeeksModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [HealthController],
 })
 export class AppModule {}
