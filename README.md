@@ -31,6 +31,28 @@
 $ npm install
 ```
 
+## 환경변수
+
+`.env`에 DB 접속 정보(`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`) 외에 아래 값을 둘 수 있다.
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `LOCK_CONFIRMED_WEEKS` | `false` | `"true"`일 때만 확정된 주의 판매 금액, 원자재, 지출 추가/삭제를 `409 WEEK_CONFIRMED`로 막는다. 값이 없거나 다른 값이면 막지 않는다. 확정 해제(`POST /weeks/:startDate/unconfirm`)는 항상 허용. 서버 시작 시 한 번 읽으므로 바꾸면 재시작해야 한다. |
+
+## 동시 수정 충돌 (낙관적 락)
+
+`GET /weeks/:startDate` 응답의 `version`(주차)과 `contributions[].version`(멤버별 원자재)을 수정 요청 body에 그대로 보낸다. 행이 아직 없으면 `0`.
+
+- `PUT /weeks/:startDate/sales` `{ salesBefore, salesAfter, version }`
+- `PUT /weeks/:startDate/contributions/:memberId` `{ materialAmount, version }`
+- `POST /weeks/:startDate/confirm`, `POST /weeks/:startDate/unconfirm` `{ version }`
+
+그사이 다른 사람이 먼저 수정했으면 `409`와 함께 최신 주차 데이터를 `current`로 돌려준다.
+
+```json
+{ "statusCode": 409, "code": "VERSION_CONFLICT", "message": "다른 사람이 먼저 수정했습니다. 최신 값을 확인하세요", "current": { "...": "GET /weeks/:startDate 와 같은 형식" } }
+```
+
 ## Compile and run the project
 
 ```bash

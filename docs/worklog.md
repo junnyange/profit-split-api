@@ -55,3 +55,77 @@
 - 응답에 멤버 이름(`name`)이 들어감. 공개 범위에 따라 필요하면 빼기.
 - `fee`, `expenseAdjusted`, `distributable`이 소수가 될 수 있음 (calculate() 그대로 반환). 화면에서 표시 방식 정할 것.
 - 마이그레이션 전환 (현재 `synchronize: true`).
+
+### 2026-10-30 - 동시 수정 충돌 처리(낙관적 락, 409) + 확정/확정 해제 API
+
+**만든/수정한 파일과 각 역할**
+- `src/weeks/dto/version.dto.ts` (새 파일): `version` 필드 하나(필수, 0 이상 정수). confirm/unconfirm body로 쓰고, 아래 두 DTO가 상속함.
+- `src/weeks/dto/update-sales.dto.ts`, `update-contribution.dto.ts` (수정): `VersionDto`를 상속해서 `version`이 필수가 됨.
+- `src/weeks/weeks.controller.ts` (수정): `POST /weeks/:startDate/confirm`, `POST /weeks/:startDate/unconfirm` 추가 (`@HttpCode(200)`).
+- `src/weeks/weeks.service.ts` (수정):
+  - `getWeek()` 응답에 week `version`, contributions 각 `version` 추가. 행이 없으면 0.
+  - `updateWithVersion()`: `UPDATE ... SET ..., version = version + 1 WHERE ... AND version = ?` 한 문장으로 실행. affected가 0이면 409.
+  - `insertOrConflict()`: version 0일 때 insert하고, unique 충돌이면 409.
+  - `setConfirmed()`: 확정/해제. 주차가 없으면 404, 이미 그 상태면 그대로 200.
+  - `assertWritable()`: `LOCK_CONFIRMED_WEEKS=true`이고 확정된 주면 409 `WEEK_CONFIRMED`.
+  - `ConfigService`를 생성자에 주입.
+  - 원자재를 저장하던 기존 `saveContribution()`(읽고 save)은 삭제.
+  - `deleteExpense()`는 지출과 그 주차를 먼저 읽어서 확정 여부를 확인하도록 바뀜.
+- `src/weeks/weeks.service.spec.ts` (수정): 낙관적 락 5개, 확정 주 차단 3개 테스트 추가. setup에 QueryBuilder mock과 ConfigService mock 추가.
+- `README.md` (수정): `LOCK_CONFIRMED_WEEKS` 환경변수, version 사용법, 409 응답 형식 설명.
+
+**환경변수 `LOCK_CONFIRMED_WEEKS`**
+- `"true"`일 때만 확정된 주의 sales, contributions, 지출 추가/삭제를 409 `WEEK_CONFIRMED`로 막음. 값이 없거나 다른 값이면 막지 않음(false).
+- unconfirm은 항상 허용.
+- 서버 시작 시 생성자에서 한 번 읽음. 값을 바꾸면 재시작해야 함.
+- `.env`에는 아직 추가하지 않음 (직접 추가할 예정).
+
+**내린 설계 결정과 이유**
+- **save()를 쓰지 않은 이유 (확인함)**: TypeORM 1.1.2 `persistence/SubjectExecutor.js`의 update 경로는 `.update(target).set(updateMap).whereEntity(subject.identifier)`라서, WHERE에 기본키만 들어가고 version은 `version + 1`로 올리기만 함. 즉 `@VersionColumn`이 있어도 save()는 충돌을 검사하지 않음. "읽고 → 비교 → save()"는 비교와 저장 사이에 다른 요청이 끼어들면 덮어씀(아래 측정의 "변경 전" 결과). 그래서 조건부 UPDATE 한 문장으로 비교와 저장을 DB 안에서 원자적으로 처리함. 같은 이유를 코드 주석으로 남김.
+- **`version = version + 1`을 따로 쓰지 않은 이유**: `UpdateQueryBuilder`는 엔티티에 version 컬럼이 있고 set에 없으면 `version = version + 1`과 `updatedAt = CURRENT_TIMESTAMP`를 자동으로 붙임 (`query-builder/UpdateQueryBuilder.js` 436행). 실제로 한 번 수정할 때마다 version이 정확히 1씩 오르는 것을 확인함.
+- **version 0 처리**: version 0이면 insert를 시도함. 그사이 다른 요청이 먼저 만들었으면 unique 충돌(`ER_DUP_ENTRY`)이 나고 409를 줌. 행이 이미 있는데 클라이언트가 0을 보낸 경우도 같은 unique 충돌로 409가 됨.
+- **version > 0인데 행이 없는 경우**: UPDATE의 affected가 0이라 409가 됨. 별도 분기는 만들지 않음.
+- **원자재 PUT의 주차 생성**: 주차는 지금처럼 get-or-create로 만들고(주차를 만드는 경쟁은 충돌로 보지 않음), version 검사는 contribution 행에만 적용함.
+- **confirm 멱등**: 이미 원하는 상태면 version을 검사하지 않고 지금 상태 그대로 200. unconfirm도 같은 규칙으로 맞춤.
+- **409 body**: `ConflictException`에 객체를 넘기면 Nest가 그 객체를 그대로 응답 body로 씀. `current`는 `getWeek()` 결과라서 GET 응답과 형식이 같음.
+- **확정 주 차단은 "읽고 확인" 방식 (shortcut)**: 주차를 읽어 `confirmed`를 확인한 뒤 씀. confirm과 거의 동시에 들어온 수정 1건은 통과할 수 있음. 코드에 `shortcut:` 주석으로 남김. 필요하면 트랜잭션 + `SELECT ... FOR UPDATE`로 바꿀 것.
+- confirm/unconfirm은 POST지만 새 리소스를 만들지 않으므로 201 대신 200을 반환함.
+
+**중간에 난 에러와 해결 방법**
+- 변경 전 코드를 비교 측정하려고 scratchpad에 `git archive HEAD`로 풀고 node_modules junction을 만들 때, Git Bash에서 `cmd //c mklink /J`는 인자 파싱이 깨짐. PowerShell `New-Item -ItemType Junction`으로 해결. 측정 후에는 junction(링크)만 지우고, 프로젝트 node_modules가 그대로인 것을 확인함.
+- 서버 로그의 `Duplicate entry ... for key 'weeks.IDX_...'` / `'contributions.IDX_...'`: 409로 처리된 unique 충돌을 TypeORM이 `logging: ['error']` 설정 때문에 출력한 것. 서버가 죽은 게 아니고 응답은 정상 409.
+- 측정 스크립트의 200/409 개수 세는 첫 번째 버전이 틀렸음 (줄바꿈 없는 파일을 이어 붙여서 `grep -c`가 1을 셈). 결과를 파일마다 한 줄씩 쓰도록 고쳐서 다시 측정함.
+
+**확인한 방법과 결과**
+- `npm run build`: 에러 없음.
+- `npm test`: 3 suites, **16 tests** 모두 통과 (기존 8 + 새 8).
+- 포트 3001에 `LOCK_CONFIRMED_WEEKS=true`로 새 서버를 띄우고 2099-01-05 주차만 사용 (시작 전에 남은 2099-01-05 행 삭제, 0행 확인). confirm 404 확인에 2099-01-12를 한 번 썼지만 행은 생기지 않음.
+  - 행이 없을 때 GET → week `version` 0, contributions 5명 모두 `version` 0.
+  - version 없이 PUT → 400. version 0으로 sales PUT → 200 (version 1). 다시 version 0 → 409 `VERSION_CONFLICT` + `current`. version 1 → 200 (version 2). 다시 version 1 → 409.
+  - contribution version 0 → 200 (version 1). 다시 version 0 → 409.
+  - 없는 주 confirm → 404. 틀린 version으로 confirm → 409. 맞는 version → 200 (`confirmed: true`, DB에 `confirmedAt` 기록). 다시 confirm(아무 version) → 200, version 그대로.
+  - 확정 상태 + 차단 켜짐: sales, contributions, 지출 추가, 지출 삭제 → 모두 409 `WEEK_CONFIRMED`. 틀린 version으로 unconfirm → 409 `VERSION_CONFLICT`, 맞는 version → 200. 해제 후 지출 추가 201, 삭제 204.
+- **동시성 측정 (같은 contribution, 같은 version, 서로 다른 값 10개 동시 전송, 5회 반복)**
+
+  | | 200 | 409 | 최종 값 |
+  |---|---|---|---|
+  | 변경 후 (조건부 UPDATE) | 매 회 1 | 매 회 9 | 매 회 200을 받은 요청의 값 (version +1) |
+  | 변경 전 (version 없이 save, 포트 3002) | 매 회 10 | 0 | 마지막으로 처리된 요청의 값. 나머지 9개 입력은 아무 알림 없이 덮어써짐 (version은 매 회 +10) |
+
+  - 변경 후 5회 합계: 50개 중 200 5개, 409 45개. 잃어버린 입력 0개 (409를 받은 9명은 `current`로 최신 값을 받음).
+  - 변경 전 5회 합계: 50개 모두 200. 그중 45개 입력이 조용히 사라짐.
+  - 추가 측정: 아직 행이 없는 contribution(멤버 2)에 version 0으로 10개 동시 전송 → 200 1개, 409 9개, 최종 값 = 200을 받은 값, version 1.
+  - 변경 전 측정은 `git archive HEAD`(커밋 d929530, 이번 변경 전)를 scratchpad에서 빌드해 포트 3002로 띄우고, 같은 DB, 같은 주차에 version 없이 보냄.
+- 측정이 끝난 뒤 2099-01-05 주차 행 삭제 (2099년 weeks 0행, 고아 contributions 0행 확인). 3001, 3002 서버 종료.
+
+**아직 남은 일 / 확인이 필요한 점**
+- `.env`에 `LOCK_CONFIRMED_WEEKS` 추가 (직접 할 예정). 지금은 값이 없으므로 차단 꺼짐.
+- 확정 주 차단은 읽고 확인하는 방식이라, confirm과 동시에 들어온 수정 1건은 통과할 수 있음. 엄격하게 막으려면 트랜잭션 + `SELECT ... FOR UPDATE`.
+- 지출 추가/삭제는 version 검사를 하지 않음. 그래서 지출이 바뀌어도 week version은 그대로임 (정산 결과는 바뀜). 화면이 week version만 보고 "변경 없음"으로 판단하면 안 됨.
+- 409 `current`는 충돌 직후 다시 조회한 값이라, 그 사이에 또 바뀌었을 수 있음 (클라이언트가 다시 409를 받으면 재시도).
+- 프론트엔드에서 409를 받았을 때 `current`로 다시 그리는 처리.
+- 응답에 멤버 이름(`name`)이 들어감. 공개 범위에 따라 필요하면 빼기.
+- `fee`, `expenseAdjusted`, `distributable`이 소수가 될 수 있음 (calculate() 그대로 반환). 화면에서 표시 방식 정할 것.
+- 마이그레이션 전환 (현재 `synchronize: true`). 다음 단계.
+- 해결됨: 같은 contribution 동시 수정 시 덮어쓰기, 확정 API, 확정 주 쓰기 차단.
+- 지난 항목의 포트 3000 서버 500 에러: 서버가 꺼져서 이번엔 재현하지 않았음. 원인은 여전히 확인 못 함. 다음에 `npm run start:dev`로 띄웠을 때 다시 보이면 콘솔 로그 확인.

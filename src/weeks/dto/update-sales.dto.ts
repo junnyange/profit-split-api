@@ -1,6 +1,7 @@
 import { IsInt, Min } from 'class-validator';
+import { VersionDto } from './version.dto';
 
-export class UpdateSalesDto {
+export class UpdateSalesDto extends VersionDto {
   @IsInt()
   @Min(0)
   salesBefore: number;

@@ -5,6 +5,7 @@ import { ParseDatePipe } from '../common/parse-date.pipe';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateContributionDto } from './dto/update-contribution.dto';
 import { UpdateSalesDto } from './dto/update-sales.dto';
+import { VersionDto } from './dto/version.dto';
 import { WeeksService } from './weeks.service';
 
 // DELETE /expenses/:id 도 주차 데이터에 속하므로 이 컨트롤러에서 처리
@@ -32,6 +33,24 @@ export class WeeksController {
     @Body() dto: UpdateContributionDto,
   ) {
     return this.weeksService.updateContribution(startDate, memberId, dto);
+  }
+
+  @Post('weeks/:startDate/confirm')
+  @HttpCode(200)
+  confirm(
+    @Param('startDate', ParseDatePipe) startDate: string,
+    @Body() dto: VersionDto,
+  ) {
+    return this.weeksService.setConfirmed(startDate, true, dto.version);
+  }
+
+  @Post('weeks/:startDate/unconfirm')
+  @HttpCode(200)
+  unconfirm(
+    @Param('startDate', ParseDatePipe) startDate: string,
+    @Body() dto: VersionDto,
+  ) {
+    return this.weeksService.setConfirmed(startDate, false, dto.version);
   }
 
   @Post('weeks/:startDate/expenses')
